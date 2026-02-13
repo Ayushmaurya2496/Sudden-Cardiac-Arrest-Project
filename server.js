@@ -36,6 +36,13 @@ const MODEL_CANDIDATES = [
   'gemini-1.0-pro-vision',
   'gemini-1.0-pro',
 ].filter(Boolean);
+const TEXT_MODEL_CANDIDATES = [
+  process.env.GOOGLE_TEXT_MODEL,
+  'gemini-1.5-flash-latest',
+  'gemini-1.5-pro',
+  'gemini-2.0-flash-exp',
+  'gemini-1.0-pro',
+].filter(Boolean);
 
 const defaultPython = process.platform === 'win32'
   ? path.join(__dirname, '.venv', 'Scripts', 'python.exe')
@@ -55,6 +62,14 @@ const meta = JSON.parse(fs.readFileSync(META_PATH, 'utf8'));
 const featureNames = meta.feature_names;
 const FEATURE_FIELDS = Array.isArray(featureNames) ? featureNames : [];
 const labelMap = meta.label_map;
+const CLASS_SUMMARIES = {
+  F: 'Fusion beats blend ventricular and supraventricular impulses; usually benign but signal mixed conduction.',
+  N: 'Normal sinus beat with expected atrioventricular conduction and morphology.',
+  Q: 'Unclassifiable/artifact beat; the tracing is noisy or atypical and needs manual confirmation.',
+  SVEB: 'Supraventricular ectopic beat arising above the ventricles, often narrow and premature.',
+  VEB: 'Ventricular ectopic beat with wide QRS indicating ventricular origin; monitor for frequency or runs.',
+};
+const classDescriptionCache = new Map();
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const upload = multer({
@@ -108,6 +123,20 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 const User = mongoose.models.User || mongoose.model('User', userSchema);
+
+const predictionHistorySchema = new mongoose.Schema({
+  username: { type: String, required: true, index: true },
+  userDisplayName: { type: String, required: true },
+  role: { type: String, enum: ['admin', 'doctor', 'patient'], required: true },
+  features: { type: mongoose.Schema.Types.Mixed, required: true },
+  predictionLabel: { type: String, required: true },
+  labelId: { type: Number, required: true },
+  probabilities: { type: mongoose.Schema.Types.Mixed, default: null },
+  description: { type: String, default: null },
+}, { timestamps: true });
+
+const PredictionHistory = mongoose.models.PredictionHistory
+  || mongoose.model('PredictionHistory', predictionHistorySchema);
 
 app.use((req, res, next) => {
   res.locals.currentUser = req.session.user || null;
@@ -257,10 +286,42 @@ app.get('/dashboard', requireAuth, (req, res) => {
   });
 });
 
+app.get('/history', requireAuth, async (req, res) => {
+  try {
+    const entries = await PredictionHistory.find({ username: req.session.user.username })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.render('history', {
+      entries,
+    });
+  } catch (error) {
+    console.error('Failed to load history:', error.message);
+    res.status(500).render('history', {
+      entries: [],
+      error: 'Could not load prediction history. Please try again later.',
+    });
+  }
+});
+
+app.post('/history/:entryId/delete', requireAuth, async (req, res) => {
+  try {
+    await PredictionHistory.deleteOne({
+      _id: req.params.entryId,
+      username: req.session.user.username,
+    });
+    res.redirect('/history');
+  } catch (error) {
+    console.error('Failed to delete history entry:', error.message);
+    res.status(500).redirect('/history');
+  }
+});
+
 app.get('/predict', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
   res.render('index', {
     featureNames,
     prediction: null,
+    predictionDescription: null,
     errors: [],
     values: {},
     uploadError: null,
@@ -283,6 +344,7 @@ app.post('/upload-image', requireAuth, requireRole(['admin', 'doctor']), (req, r
       return res.status(400).render('index', {
         featureNames,
         prediction: null,
+        predictionDescription: null,
         errors: [],
         values: {},
         uploadError: message,
@@ -295,6 +357,7 @@ app.post('/upload-image', requireAuth, requireRole(['admin', 'doctor']), (req, r
       return res.status(400).render('index', {
         featureNames,
         prediction: null,
+        predictionDescription: null,
         errors: [],
         values: {},
         uploadError: 'Please select an image to upload.',
@@ -306,6 +369,7 @@ app.post('/upload-image', requireAuth, requireRole(['admin', 'doctor']), (req, r
     return res.render('index', {
       featureNames,
       prediction: null,
+      predictionDescription: null,
       errors: [],
       values: {},
       uploadError: null,
@@ -356,6 +420,7 @@ app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, 
     return res.render('index', {
       featureNames,
       prediction: null,
+      predictionDescription: null,
       errors,
       values,
       uploadError: null,
@@ -366,9 +431,18 @@ app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, 
 
   try {
     const prediction = await runPython(payload);
-    res.render('index', {
+    let predictionDescription = null;
+    try {
+      predictionDescription = await describePredictionWithLLM(prediction);
+    } catch (_descError) {
+      predictionDescription = getFallbackClassSummary(prediction.readableLabel || prediction.label);
+    }
+      await recordPredictionHistory(req.session.user, payload.features, prediction, predictionDescription);
+    
+      return res.render('index', {
       featureNames,
       prediction,
+      predictionDescription,
       errors: [],
       values,
       uploadError: null,
@@ -380,6 +454,7 @@ app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, 
     res.render('index', {
       featureNames,
       prediction: null,
+      predictionDescription: null,
       errors: [message],
       values,
       uploadError: null,
@@ -617,6 +692,43 @@ function tolerantParseJson(raw) {
   }
 }
 
+// Last-ditch attempt to salvage key/value pairs from malformed JSON blobs.
+function recoverLooseKeyValuePairs(rawText) {
+  if (typeof rawText !== 'string' || !rawText.trim()) {
+    return null;
+  }
+
+  const result = {};
+  const pairRegex = /"([^"\\]+)"\s*:\s*(?:"([^"\\]*)"|(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)|(null)|(true)|(false))/gi;
+  let match;
+
+  while ((match = pairRegex.exec(rawText)) !== null) {
+    const key = match[1];
+    if (!key) {
+      continue;
+    }
+
+    let value;
+    if (match[2] !== undefined) {
+      value = match[2];
+    } else if (match[3] !== undefined) {
+      value = Number(match[3]);
+    } else if (match[4] !== undefined) {
+      value = null;
+    } else if (match[5] !== undefined) {
+      value = true;
+    } else if (match[6] !== undefined) {
+      value = false;
+    } else {
+      continue;
+    }
+
+    result[key] = value;
+  }
+
+  return Object.keys(result).length ? result : null;
+}
+
 async function resolveGeminiResponse(result) {
   const maybeResponse = result?.response;
   if (!maybeResponse) {
@@ -719,18 +831,142 @@ function getFeatureRange(name) {
   return inferRangeForFeature(name);
 }
 
+// Attempts to recover usable numbers from OCR noise (units, commas, etc.).
+function parseNumericLikeValue(rawValue) {
+  if (rawValue === null || rawValue === undefined) {
+    return null;
+  }
+
+  if (typeof rawValue === 'number') {
+    return Number.isFinite(rawValue) ? rawValue : null;
+  }
+
+  if (typeof rawValue === 'boolean') {
+    return rawValue ? 1 : 0;
+  }
+
+  if (Array.isArray(rawValue)) {
+    for (const candidate of rawValue) {
+      const parsed = parseNumericLikeValue(candidate);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  if (typeof rawValue === 'string') {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const lowered = trimmed.toLowerCase();
+    if (['null', 'none', 'nan', 'n/a', 'na', 'unknown'].includes(lowered)) {
+      return null;
+    }
+
+    const normalized = lowered.replace(/,/g, '');
+    const fractionMatch = normalized.match(/(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)/);
+    if (fractionMatch) {
+      const numerator = Number(fractionMatch[1]);
+      return Number.isFinite(numerator) ? numerator : null;
+    }
+
+    const match = normalized.match(/-?\d+(?:\.\d+)?/);
+    if (match) {
+      const numeric = Number(match[0]);
+      return Number.isFinite(numeric) ? numeric : null;
+    }
+
+    const fallback = Number(normalized);
+    return Number.isFinite(fallback) ? fallback : null;
+  }
+
+  return null;
+}
+
+function normalizeFeatureKey(key) {
+  return String(key || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function lookupValueFromObject(source, key) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(source, key)) {
+    return source[key];
+  }
+
+  const targetSlug = normalizeFeatureKey(key);
+  for (const [candidateKey, value] of Object.entries(source)) {
+    if (normalizeFeatureKey(candidateKey) === targetSlug) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function getFeatureValue(parsed, key) {
+  if (parsed === null || parsed === undefined) {
+    return null;
+  }
+
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      const match = getFeatureValue(item, key);
+      if (match !== null && match !== undefined) {
+        return match;
+      }
+    }
+    return null;
+  }
+
+  if (typeof parsed !== 'object') {
+    return null;
+  }
+
+  const direct = lookupValueFromObject(parsed, key);
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  const nestedKeys = ['features', 'data', 'values', 'payload', 'measurements'];
+  for (const nestedKey of nestedKeys) {
+    const nested = parsed[nestedKey];
+    if (nested && typeof nested === 'object') {
+      const match = getFeatureValue(nested, key);
+      if (match !== null && match !== undefined) {
+        return match;
+      }
+    }
+  }
+
+  return null;
+}
+
 function sanitizeExtractedFeatures(parsed) {
   const clean = {};
   for (const key of FEATURE_FIELDS) {
-    const rawValue = parsed?.[key];
-    const numericValue = typeof rawValue === 'number' ? rawValue : Number(rawValue);
-    if (!Number.isFinite(numericValue)) {
+    const rawValue = getFeatureValue(parsed, key);
+    const numericValue = parseNumericLikeValue(rawValue);
+    if (numericValue === null) {
       clean[key] = null;
       continue;
     }
 
     const [min, max] = getFeatureRange(key);
-    clean[key] = numericValue >= min && numericValue <= max ? numericValue : null;
+    const tolerance = Math.max((max - min) * 0.25, 5);
+    if (numericValue < (min - tolerance) || numericValue > (max + tolerance)) {
+      clean[key] = null;
+      continue;
+    }
+
+    clean[key] = Number(numericValue.toFixed(3));
   }
   return clean;
 }
@@ -788,6 +1024,128 @@ function buildFeatureTemplate() {
   return JSON.stringify(template, null, 2);
 }
 
+function buildFeatureSpecification() {
+  const list = FEATURE_FIELDS.map((name) => `- "${name}"`).join('\n');
+  return `Required JSON keys (include every key even if value is null):\n${list}`;
+}
+
+function getFallbackClassSummary(readableLabel) {
+  if (!readableLabel) {
+    return 'No additional context available for this class.';
+  }
+
+  const normalized = String(readableLabel).toUpperCase();
+  return CLASS_SUMMARIES[normalized] || `Limited context is available for ${readableLabel}. Consult the ECG trace for confirmation.`;
+}
+
+function buildProbabilitySummary(probabilities) {
+  if (!probabilities || typeof probabilities !== 'object') {
+    return '';
+  }
+
+  const ranked = Object.entries(probabilities)
+    .filter((entry) => typeof entry[1] === 'number')
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([label, prob]) => `${label}: ${(prob * 100).toFixed(1)}%`);
+
+  return ranked.length ? `Top probabilities: ${ranked.join(', ')}.` : '';
+}
+
+async function describePredictionWithLLM(prediction) {
+  if (!prediction) {
+    return 'Prediction details are unavailable.';
+  }
+
+  const fallback = getFallbackClassSummary(prediction.readableLabel || prediction.label);
+  const cacheKey = `${prediction.label_id}-${prediction.readableLabel || prediction.label}`;
+
+  if (classDescriptionCache.has(cacheKey)) {
+    return classDescriptionCache.get(cacheKey);
+  }
+
+  if (!process.env.GOOGLE_API_KEY || !genAI || TEXT_MODEL_CANDIDATES.length === 0) {
+    return fallback;
+  }
+
+  let lastError = null;
+  try {
+    const probabilitySummary = buildProbabilitySummary(prediction.probabilities);
+    const prompt = [
+      'You are acting as a cardiac electrophysiology expert explaining ECG beat classifications.',
+      'Write a concise, two-sentence clinical description of the predicted class below.',
+      'Avoid mentioning that you are an AI, and do not restate instructions.',
+      `Predicted label: ${prediction.readableLabel || prediction.label}`,
+      `Label id: ${prediction.label_id}`,
+      probabilitySummary,
+      'Tone: confident, clinical, and easy to skim for a busy cardiologist.',
+    ].filter(Boolean).join('\n');
+
+    for (const modelName of TEXT_MODEL_CANDIDATES) {
+      try {
+        const textModel = genAI.getGenerativeModel({ model: modelName });
+        const response = await callGeminiWithRetries(() => textModel.generateContent({
+          contents: [{
+            role: 'user',
+            parts: [{ text: prompt }],
+          }],
+          generationConfig: {
+            temperature: 0.4,
+            topP: 0.8,
+            topK: 32,
+            maxOutputTokens: 256,
+          },
+        }));
+
+        const rawText = await extractGeminiRawText(response);
+        const cleaned = (rawText || '').replace(/\s+/g, ' ').trim();
+        if (!cleaned) {
+          throw new Error('Empty description');
+        }
+
+        const finalText = cleaned.length > 360 ? `${cleaned.slice(0, 357)}...` : cleaned;
+        classDescriptionCache.set(cacheKey, finalText);
+        return finalText;
+      } catch (modelError) {
+        lastError = modelError;
+        if (modelError?.status === 404) {
+          continue;
+        }
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+  } catch (error) {
+    console.error('Prediction description failed:', error.message);
+    const fallbackText = fallback;
+    classDescriptionCache.set(cacheKey, fallbackText);
+    return fallbackText;
+  }
+}
+
+async function recordPredictionHistory(sessionUser, features, prediction, predictionDescription) {
+  if (!sessionUser || !sessionUser.username || !prediction) {
+    return;
+  }
+
+  try {
+    await PredictionHistory.create({
+      username: sessionUser.username,
+      userDisplayName: sessionUser.fullName || sessionUser.username,
+      role: sessionUser.role || 'doctor',
+      features,
+      predictionLabel: prediction.readableLabel || prediction.label || 'Unknown',
+      labelId: Number.isFinite(Number(prediction.label_id)) ? Number(prediction.label_id) : -1,
+      probabilities: prediction.probabilities || null,
+      description: predictionDescription || null,
+    });
+  } catch (error) {
+    console.error('Failed to record prediction history:', error.message);
+  }
+}
+
 async function extractFeaturesWithGoogleLLM(file) {
   if (!process.env.GOOGLE_API_KEY || !genAI) {
     if (ENABLE_MOCK_VISION) {
@@ -811,8 +1169,11 @@ async function extractFeaturesWithGoogleLLM(file) {
   'Return STRICT JSON only.',
   'No markdown. No code fences. No leading text.',
   'Response must start with "{" and end with "}".',
-  'JSON template (fill values or null):',
+  buildFeatureSpecification(),
+  'JSON template (fill values or null, keep the same order):',
   buildFeatureTemplate(),
+  'Example output (values are illustrative only):',
+  '{\n  "0_pre-RR": 0,\n  "0_post-RR": null,\n  "...": null\n}',
 ].join('\n\n');
 
 
@@ -840,7 +1201,7 @@ async function extractFeaturesWithGoogleLLM(file) {
             temperature: 0,
             topP: 0.1,
             topK: 1,
-            maxOutputTokens: 1024,
+            maxOutputTokens: 2048,
             responseMimeType: 'application/json',
           },
         });
@@ -863,7 +1224,14 @@ async function extractFeaturesWithGoogleLLM(file) {
   }
 
   const rawText = await extractGeminiRawText(response);
-  const parsed = tolerantParseJson(rawText);
+  console.log('[Gemini OCR] raw response text:', rawText || '<empty>');
+  let parsed = tolerantParseJson(rawText);
+  console.log('[Gemini OCR] parsed response object:', parsed);
+  if (!parsed) {
+    parsed = recoverLooseKeyValuePairs(rawText);
+    console.log('[Gemini OCR] recovered via loose parser:', parsed);
+  }
+
   if (!parsed) {
     if (ENABLE_MOCK_VISION) {
       return buildMockFeatures(file.path);
@@ -871,7 +1239,9 @@ async function extractFeaturesWithGoogleLLM(file) {
     throw new Error('Gemini returned invalid JSON');
   }
 
-  return sanitizeExtractedFeatures(parsed);
+  const sanitized = sanitizeExtractedFeatures(parsed);
+  console.log('[Gemini OCR] sanitized features:', sanitized);
+  return sanitized;
 }
 
 function runPython(payload) {

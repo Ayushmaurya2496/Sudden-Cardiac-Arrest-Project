@@ -16,6 +16,7 @@
           </div>
           <div class="topbar-actions">
             <a href="/dashboard" class="ghost-link">Dashboard</a>
+            <a href="/history" class="ghost-link">History</a>
             <form method="POST" action="/logout">
               <button type="submit" class="ghost-btn">Logout</button>
             </form>
@@ -27,6 +28,7 @@
         <div class="redirect-row">
           <a href="/dashboard" class="link-btn">Redirect to Dashboard</a>
           <a href="/predict" class="ghost-link">New Prediction Form</a>
+          <a href="/history" class="ghost-link">View History</a>
         </div>
 
         <section class="upload-box">
@@ -68,24 +70,6 @@
           </div>
         <% } %>
 
-        <% if (prediction) { %>
-          <div class="alert alert-success">
-            <h2>Prediction</h2>
-            <p class="label">Predicted Class: <strong><%= prediction.readableLabel %></strong></p>
-            <p>ID: <%= prediction.label_id %></p>
-            <% if (prediction.probabilities) { %>
-              <div class="probabilities">
-                <% Object.entries(prediction.probabilities).forEach(function(entry) { %>
-                  <div class="prob-row">
-                    <span><%= entry[0] %></span>
-                    <span><%= (entry[1] * 100).toFixed(2) %>%</span>
-                  </div>
-                <% }) %>
-              </div>
-            <% } %>
-          </div>
-        <% } %>
-
         <form method="POST" action="/predict" class="form-grid" id="predict-form">
           <% featureNames.forEach(function(name) { %>
             <label class="field">
@@ -100,6 +84,29 @@
             </label>
           <% }) %>
           <button type="submit" class="submit">Predict Beat Type</button>
+          <% if (prediction) { %>
+            <div class="alert alert-success prediction-result">
+              <div class="prediction-core">
+                <h2>Prediction</h2>
+                <p class="label">Predicted Class: <strong><%= prediction.readableLabel %></strong></p>
+                <p>ID: <%= prediction.label_id %></p>
+                <% if (prediction.probabilities) { %>
+                  <div class="probabilities">
+                    <% Object.entries(prediction.probabilities).forEach(function(entry) { %>
+                      <div class="prob-row">
+                        <span><%= entry[0] %></span>
+                        <span><%= (entry[1] * 100).toFixed(2) %>%</span>
+                      </div>
+                    <% }) %>
+                  </div>
+                <% } %>
+              </div>
+              <div class="prediction-description">
+                <h3>Class Insight</h3>
+                <p><%= predictionDescription || 'No additional context available.' %></p>
+              </div>
+            </div>
+          <% } %>
         </form>
       </section>
     </main>

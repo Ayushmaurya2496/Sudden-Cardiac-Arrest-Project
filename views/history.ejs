@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Prediction History</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <div class="topbar">
+          <div>
+            <h1>Prediction History</h1>
+            <p>Signed in as <strong><%= currentUser.fullName %></strong> (<%= currentUser.role %>)</p>
+          </div>
+          <div class="topbar-actions">
+            <a href="/dashboard" class="ghost-link">Dashboard</a>
+            <a href="/predict" class="ghost-link">Predict</a>
+            <form method="POST" action="/logout">
+              <button type="submit" class="ghost-btn">Logout</button>
+            </form>
+          </div>
+        </div>
+
+        <p>All stored predictions for your account, including timestamps, model confidence, and extracted features.</p>
+
+        <% if (typeof error !== 'undefined' && error) { %>
+          <div class="alert alert-error"><%= error %></div>
+        <% } %>
+
+        <% if (!entries || !entries.length) { %>
+          <div class="alert alert-success">
+            <p>No predictions saved yet. Run a prediction to build your history.</p>
+          </div>
+        <% } else { %>
+          <div class="history-grid">
+            <% entries.forEach(function(entry) { %>
+              <article class="history-card">
+                <header>
+                  <p class="history-label">Class: <strong><%= entry.predictionLabel %></strong></p>
+                  <p class="history-meta">Recorded <%= new Date(entry.createdAt).toLocaleString() %></p>
+                </header>
+
+                <% if (entry.description) { %>
+                  <p class="history-description"><%= entry.description %></p>
+                <% } %>
+
+                <% if (entry.probabilities) { %>
+                  <div class="probabilities">
+                    <% Object.entries(entry.probabilities).forEach(function(prob) { %>
+                      <div class="prob-row">
+                        <span><%= prob[0] %></span>
+                        <span><%= (prob[1] * 100).toFixed(1) %>%</span>
+                      </div>
+                    <% }) %>
+                  </div>
+                <% } %>
+
+                <details class="history-features">
+                  <summary>Show feature vector</summary>
+                  <div class="feature-grid">
+                    <% Object.entries(entry.features || {}).forEach(function(feature) { %>
+                      <div>
+                        <span class="feature-name"><%= feature[0] %></span>
+                        <span class="feature-value"><%= feature[1] %></span>
+                      </div>
+                    <% }) %>
+                  </div>
+                </details>
+
+                <form method="POST" action="/history/<%= entry._id %>/delete" class="history-delete-form">
+                  <button type="submit" class="ghost-btn delete">Delete Entry</button>
+                </form>
+              </article>
+            <% }) %>
+          </div>
+        <% } %>
+      </section>
+    </main>
+  </body>
+</html>
