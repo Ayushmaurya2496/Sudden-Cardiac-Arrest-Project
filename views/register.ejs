@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Register | Holter Beat Prediction</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page page-auth">
+      <section class="panel auth-panel">
+        <h1>Create Account</h1>
+        <p>Register as doctor or patient to access the system.</p>
+
+        <% if (error) { %>
+          <div class="alert alert-error"><%= error %></div>
+        <% } %>
+
+        <% if (success) { %>
+          <div class="alert alert-success"><%= success %></div>
+        <% } %>
+
+        <form method="POST" action="/register" class="auth-form">
+          <label class="field">
+            <span>Full Name</span>
+            <input type="text" name="fullName" value="<%= values.fullName || '' %>" required />
+          </label>
+
+          <label class="field">
+            <span>Username</span>
+            <input type="text" name="username" value="<%= values.username || '' %>" required />
+          </label>
+
+          <label class="field">
+            <span>Role</span>
+            <select name="role" required>
+              <option value="patient" <%= values.role === 'patient' ? 'selected' : '' %>>Patient</option>
+              <option value="doctor" <%= values.role === 'doctor' ? 'selected' : '' %>>Doctor</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Password</span>
+            <input type="password" name="password" minlength="8" required />
+          </label>
+
+          <label class="field">
+            <span>Confirm Password</span>
+            <input type="password" name="confirmPassword" minlength="8" required />
+          </label>
+
+          <button type="submit" class="submit">Register</button>
+        </form>
+
+        <p class="muted-note">Already have an account? <a href="/login" class="auth-link">Login here</a></p>
+      </section>
+    </main>
+  </body>
+</html>

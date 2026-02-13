@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Login | arrhythmia-ai
+</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page page-auth">
+      <section class="panel auth-panel">
+        <h1>Login</h1>
+        <p>Sign in to continue as admin, doctor, or patient.</p>
+
+        <% if (error) { %>
+          <div class="alert alert-error"><%= error %></div>
+        <% } %>
+
+        <form method="POST" action="/login" class="auth-form">
+          <label class="field">
+            <span>Username</span>
+            <input type="text" name="username" value="<%= username %>" required />
+          </label>
+
+          <label class="field">
+            <span>Password</span>
+            <input type="password" name="password" required />
+          </label>
+
+          <button type="submit" class="submit">Login</button>
+        </form>
+
+        <p class="muted-note">New user? <a href="/register" class="auth-link">Create an account</a></p>
+
+        <div class="demo-credentials">
+          <h2>Demo Accounts</h2>
+          <ul>
+            <li>admin / admin123</li>
+            <li>doctor / doctor123</li>
+            <li>patient / patient123</li>
+          </ul>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

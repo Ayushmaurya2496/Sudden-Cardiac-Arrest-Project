@@ -16,6 +16,15 @@ This project replicates the same stack as your reference project:
 npm install
 ```
 
+### MongoDB Atlas connection
+
+Create `.env` in project root and add:
+
+```bash
+MONGO_URI=mongodb+srv://<username>:<password>@cluster0.9g4nsay.mongodb.net/arrhythmia?retryWrites=true&w=majority&appName=Cluster0
+SESSION_SECRET=<any-random-secret>
+```
+
 ## 2) Train model
 
 ```bash
@@ -38,6 +47,26 @@ npm start
 Open: `http://localhost:3000`
 
 The form inputs are generated automatically from `model_meta.json` feature columns, so they always match model input dataframe columns.
+
+## 5) Login and roles
+
+The app now includes a role-based login system with session authentication backed by MongoDB.
+
+- `admin` can access dashboard + prediction
+- `doctor` can access dashboard + prediction
+- `patient` can access dashboard only
+
+Demo accounts:
+
+- Username: `admin` | Password: `admin123`
+- Username: `doctor` | Password: `doctor123`
+- Username: `patient` | Password: `patient123`
+
+Security and registration:
+
+- Passwords are stored using `bcrypt` hash (not plaintext).
+- Legacy plaintext passwords are auto-upgraded to hashed passwords on startup/login.
+- New users can register from `/register` as `doctor` or `patient`.
 
 ## 4) Optional custom Python path
 

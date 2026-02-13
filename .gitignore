@@ -3,3 +3,4 @@ node_modules/
 python/__pycache__/
 *.pyc
 python/model.joblib
+.env

@@ -1,19 +1,51 @@
+require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const bodyParser = require('body-parser');
+const session = require('express-session');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const multer = require('multer');
+const cors = require('cors');
+const helmet = require('helmet');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { spawn } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const MONGO_URI = process.env.MONGO_URI;
 const PYTHON_DIR = path.join(__dirname, 'python');
 const MODEL_PATH = path.join(PYTHON_DIR, 'ecg_xgboost_model.pkl');
 const META_PATH = path.join(PYTHON_DIR, 'model_meta.json');
+const UPLOAD_DIR = path.join(__dirname, 'public', 'uploads');
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 5 * 1024 * 1024);
+const GEMINI_RETRIES = Number(process.env.GEMINI_RETRIES || 3);
+const GEMINI_RETRY_BASE_MS = Number(process.env.GEMINI_RETRY_BASE_MS || 500);
+const ENABLE_MOCK_VISION = process.env.ENABLE_MOCK_VISION !== 'false';
+const MODEL_CANDIDATES = [
+  process.env.GOOGLE_MODEL,
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-latest',
+  'gemini-2.5-flash-001',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-latest',
+  'gemini-1.5-flash-8b',
+  'gemini-1.5-pro',
+  'gemini-1.0-pro-vision',
+  'gemini-1.0-pro',
+].filter(Boolean);
 
 const defaultPython = process.platform === 'win32'
   ? path.join(__dirname, '.venv', 'Scripts', 'python.exe')
   : path.join(__dirname, '.venv', 'bin', 'python');
 const PYTHON_BIN = process.env.PYTHON_BIN || (fs.existsSync(defaultPython) ? defaultPython : 'python');
+const genAI = process.env.GOOGLE_API_KEY ? new GoogleGenerativeAI(process.env.GOOGLE_API_KEY) : null;
+
+if (!process.env.GOOGLE_API_KEY) {
+  console.warn('Warning: GOOGLE_API_KEY not set. Image analysis will use mock data when enabled.');
+}
 
 if (!fs.existsSync(META_PATH)) {
   throw new Error('Missing model metadata. Run python/train_model.py first.');
@@ -21,43 +53,356 @@ if (!fs.existsSync(META_PATH)) {
 
 const meta = JSON.parse(fs.readFileSync(META_PATH, 'utf8'));
 const featureNames = meta.feature_names;
+const FEATURE_FIELDS = Array.isArray(featureNames) ? featureNames : [];
 const labelMap = meta.label_map;
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase();
+      const safeBase = path.basename(file.originalname || 'image', ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      cb(null, `${Date.now()}-${safeBase || 'image'}${ext || '.png'}`);
+    },
+  }),
+  limits: {
+    fileSize: MAX_UPLOAD_BYTES,
+  },
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed.'));
+    }
+    return cb(null, true);
+  },
+});
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.use(cors());
+app.use(helmet());
 
-app.get('/', (req, res) => {
-  res.render('index', { featureNames, prediction: null, errors: [], values: {} });
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'ecg-final-year-project-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    maxAge: 1000 * 60 * 60 * 8,
+  },
+}));
+
+const seedUsers = [
+  { username: 'admin', password: 'admin123', role: 'admin', fullName: 'System Admin' },
+  { username: 'doctor', password: 'doctor123', role: 'doctor', fullName: 'Dr. Demo' },
+  { username: 'patient', password: 'patient123', role: 'patient', fullName: 'Patient Demo' },
+];
+
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true, trim: true },
+  password: { type: String, required: true },
+  role: { type: String, enum: ['admin', 'doctor', 'patient'], required: true },
+  fullName: { type: String, required: true },
+}, { timestamps: true });
+
+const User = mongoose.models.User || mongoose.model('User', userSchema);
+
+app.use((req, res, next) => {
+  res.locals.currentUser = req.session.user || null;
+  next();
 });
 
-app.post('/predict', async (req, res) => {
+app.get('/', requireAuth, (req, res) => {
+  res.redirect('/dashboard');
+});
+
+app.get('/login', (req, res) => {
+  if (req.session.user) {
+    return res.redirect('/dashboard');
+  }
+
+  return res.render('login', { error: null, username: '' });
+});
+
+app.get('/register', (req, res) => {
+  if (req.session.user) {
+    return res.redirect('/dashboard');
+  }
+
+  return res.render('register', { error: null, success: null, values: {} });
+});
+
+app.post('/login', async (req, res) => {
+  const username = (req.body.username || '').trim();
+  const password = req.body.password || '';
+
+  let matchedUser;
+  try {
+    matchedUser = await User.findOne({ username });
+  } catch (error) {
+    return res.status(500).render('login', {
+      error: 'Database error during login. Please try again.',
+      username,
+    });
+  }
+
+  const isPasswordValid = await verifyAndUpgradePassword(matchedUser, password);
+
+  if (!matchedUser || !isPasswordValid) {
+    return res.status(401).render('login', {
+      error: 'Invalid username or password',
+      username,
+    });
+  }
+
+  req.session.user = {
+    username: matchedUser.username,
+    role: matchedUser.role,
+    fullName: matchedUser.fullName,
+  };
+
+  return res.redirect('/dashboard');
+});
+
+app.post('/register', async (req, res) => {
+  const fullName = (req.body.fullName || '').trim();
+  const username = (req.body.username || '').trim();
+  const password = req.body.password || '';
+  const confirmPassword = req.body.confirmPassword || '';
+  const role = (req.body.role || 'patient').trim();
+
+  const values = { fullName, username, role };
+
+  if (!fullName || !username || !password || !confirmPassword || !role) {
+    return res.status(400).render('register', {
+      error: 'All fields are required.',
+      success: null,
+      values,
+    });
+  }
+
+  if (!['doctor', 'patient'].includes(role)) {
+    return res.status(400).render('register', {
+      error: 'Invalid role selected.',
+      success: null,
+      values,
+    });
+  }
+
+  if (password.length < 8) {
+    return res.status(400).render('register', {
+      error: 'Password must be at least 8 characters long.',
+      success: null,
+      values,
+    });
+  }
+
+  if (password !== confirmPassword) {
+    return res.status(400).render('register', {
+      error: 'Password and confirm password do not match.',
+      success: null,
+      values,
+    });
+  }
+
+  try {
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res.status(409).render('register', {
+        error: 'Username already exists. Please choose another.',
+        success: null,
+        values,
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    await User.create({
+      fullName,
+      username,
+      password: hashedPassword,
+      role,
+    });
+
+    return res.render('register', {
+      error: null,
+      success: 'Registration successful. You can now login.',
+      values: {},
+    });
+  } catch (error) {
+    return res.status(500).render('register', {
+      error: 'Could not register user. Please try again.',
+      success: null,
+      values,
+    });
+  }
+});
+
+app.post('/logout', requireAuth, (req, res) => {
+  req.session.destroy(() => {
+    res.redirect('/login');
+  });
+});
+
+app.get('/dashboard', requireAuth, (req, res) => {
+  const roleActions = {
+    admin: ['Monitor all users', 'Review prediction activity', 'Manage system settings'],
+    doctor: ['Run ECG beat predictions', 'Review patient trends', 'Track uncertain predictions'],
+    patient: ['View your profile', 'Check your prediction history', 'Consult your doctor'],
+  };
+
+  res.render('dashboard', {
+    actions: roleActions[req.session.user.role] || [],
+  });
+});
+
+app.get('/predict', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
+  res.render('index', {
+    featureNames,
+    prediction: null,
+    errors: [],
+    values: {},
+    uploadError: null,
+    uploadSuccess: null,
+    uploadedImageUrl: null,
+  });
+});
+
+app.get('/index', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
+  res.redirect('/predict');
+});
+
+app.post('/upload-image', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
+  upload.single('ecgImage')(req, res, (error) => {
+    if (error) {
+      const message = error instanceof multer.MulterError
+        ? `Upload failed: ${error.message}`
+        : error.message;
+
+      return res.status(400).render('index', {
+        featureNames,
+        prediction: null,
+        errors: [],
+        values: {},
+        uploadError: message,
+        uploadSuccess: null,
+        uploadedImageUrl: null,
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).render('index', {
+        featureNames,
+        prediction: null,
+        errors: [],
+        values: {},
+        uploadError: 'Please select an image to upload.',
+        uploadSuccess: null,
+        uploadedImageUrl: null,
+      });
+    }
+
+    return res.render('index', {
+      featureNames,
+      prediction: null,
+      errors: [],
+      values: {},
+      uploadError: null,
+      uploadSuccess: `Image uploaded successfully: ${req.file.originalname}`,
+      uploadedImageUrl: `/uploads/${req.file.filename}`,
+    });
+  });
+});
+
+app.post('/analyze-image', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
+  upload.single('ecgImage')(req, res, async (error) => {
+    if (error) {
+      const message = error instanceof multer.MulterError
+        ? `Upload failed: ${error.message}`
+        : error.message;
+      return res.status(400).json({ error: message });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image uploaded' });
+    }
+
+    try {
+      const features = await extractFeaturesWithGoogleLLM(req.file);
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (_cleanupError) {
+      }
+      return res.json({ features });
+    } catch (analysisError) {
+      try {
+        if (req.file && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+      } catch (_cleanupError) {
+      }
+      const message = analysisError instanceof Error ? analysisError.message : 'Failed to analyze image';
+      return res.status(500).json({ error: message });
+    }
+  });
+});
+
+app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, res) => {
   const values = { ...req.body };
   const { payload, errors } = buildPayload(req.body);
 
   if (errors.length) {
-    return res.render('index', { featureNames, prediction: null, errors, values });
+    return res.render('index', {
+      featureNames,
+      prediction: null,
+      errors,
+      values,
+      uploadError: null,
+      uploadSuccess: null,
+      uploadedImageUrl: null,
+    });
   }
 
   try {
     const prediction = await runPython(payload);
-    res.render('index', { featureNames, prediction, errors: [], values });
+    res.render('index', {
+      featureNames,
+      prediction,
+      errors: [],
+      values,
+      uploadError: null,
+      uploadSuccess: null,
+      uploadedImageUrl: null,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    res.render('index', { featureNames, prediction: null, errors: [message], values });
+    res.render('index', {
+      featureNames,
+      prediction: null,
+      errors: [message],
+      values,
+      uploadError: null,
+      uploadSuccess: null,
+      uploadedImageUrl: null,
+    });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+app.get('/forbidden', requireAuth, (req, res) => {
+  res.status(403).render('dashboard', {
+    actions: [],
+    forbiddenMessage: 'You do not have permission to access that page.',
+  });
 });
+
+startServer();
 
 function buildPayload(formBody) {
   const payload = { features: {} };
   const errors = [];
 
-  featureNames.forEach((name) => {
+  FEATURE_FIELDS.forEach((name) => {
     const rawValue = formBody[name];
     if (rawValue === undefined || rawValue === '') {
       errors.push(`${name} is required`);
@@ -73,6 +418,460 @@ function buildPayload(formBody) {
   });
 
   return { payload, errors };
+}
+
+function requireAuth(req, res, next) {
+  if (!req.session.user) {
+    return res.redirect('/login');
+  }
+
+  return next();
+}
+
+function requireRole(allowedRoles) {
+  return (req, res, next) => {
+    const currentRole = req.session.user?.role;
+    if (!currentRole || !allowedRoles.includes(currentRole)) {
+      return res.redirect('/forbidden');
+    }
+
+    return next();
+  };
+}
+
+async function startServer() {
+  try {
+    await connectDatabase();
+    await ensureSeedUsers();
+    await upgradeLegacyPlaintextPasswords();
+
+    app.listen(PORT, () => {
+      console.log(`Server listening on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error('Startup failed:', error.message);
+    process.exit(1);
+  }
+}
+
+async function connectDatabase() {
+  if (!MONGO_URI) {
+    throw new Error('MONGO_URI is missing. Add it in your .env file.');
+  }
+
+  await mongoose.connect(MONGO_URI);
+  console.log('Connected to MongoDB Atlas');
+}
+
+async function ensureSeedUsers() {
+  for (const seedUser of seedUsers) {
+    const existingUser = await User.findOne({ username: seedUser.username });
+    if (existingUser) {
+      continue;
+    }
+
+    const hashedPassword = await bcrypt.hash(seedUser.password, 12);
+    await User.create({
+      ...seedUser,
+      password: hashedPassword,
+    });
+  }
+
+  console.log('Inserted default role users into MongoDB');
+}
+
+async function upgradeLegacyPlaintextPasswords() {
+  const users = await User.find({});
+  let upgradedCount = 0;
+
+  for (const user of users) {
+    if (isBcryptHash(user.password)) {
+      continue;
+    }
+
+    user.password = await bcrypt.hash(user.password, 12);
+    await user.save();
+    upgradedCount += 1;
+  }
+
+  if (upgradedCount > 0) {
+    console.log(`Upgraded ${upgradedCount} legacy plaintext password(s)`);
+  }
+}
+
+async function verifyAndUpgradePassword(user, inputPassword) {
+  if (!user) {
+    return false;
+  }
+
+  if (isBcryptHash(user.password)) {
+    return bcrypt.compare(inputPassword, user.password);
+  }
+
+  const isMatch = user.password === inputPassword;
+  if (!isMatch) {
+    return false;
+  }
+
+  user.password = await bcrypt.hash(inputPassword, 12);
+  await user.save();
+  return true;
+}
+
+function isBcryptHash(value) {
+  return typeof value === 'string' && /^\$2[aby]\$\d{2}\$/.test(value);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractFirstJsonBlock(text) {
+  const start = text.indexOf('{');
+  if (start === -1) {
+    return null;
+  }
+
+  let depth = 0;
+  for (let index = start; index < text.length; index += 1) {
+    if (text[index] === '{') {
+      depth += 1;
+    } else if (text[index] === '}') {
+      depth -= 1;
+    }
+
+    if (depth === 0) {
+      return text.substring(start, index + 1);
+    }
+  }
+
+  return null;
+}
+
+function tolerantParseJson(raw) {
+  if (!raw) {
+    return null;
+  }
+
+  const rawText = String(raw);
+  const fencedJsonMatch = rawText.match(/```\s*json\s*([\s\S]*?)```/i);
+  if (fencedJsonMatch && fencedJsonMatch[1]) {
+    const block = extractFirstJsonBlock(fencedJsonMatch[1].trim()) || fencedJsonMatch[1].trim();
+    try {
+      return JSON.parse(block);
+    } catch (_error) {
+    }
+  }
+
+  const fencedAnyMatch = rawText.match(/```\s*([\s\S]*?)```/i);
+  if (fencedAnyMatch && fencedAnyMatch[1]) {
+    const block = extractFirstJsonBlock(fencedAnyMatch[1].trim()) || fencedAnyMatch[1].trim();
+    try {
+      return JSON.parse(block);
+    } catch (_error) {
+    }
+  }
+
+  let cleaned = rawText.trim();
+  cleaned = cleaned.replace(/```(json)?/gi, '').replace(/```/g, '').trim();
+  cleaned = cleaned
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\bNone\b/g, 'null')
+    .replace(/\bNaN\b/g, 'null')
+    .replace(/\bInfinity\b/g, 'null')
+    .replace(/\bTrue\b/g, 'true')
+    .replace(/\bFalse\b/g, 'false')
+    .replace(/,\s*([}\]])/g, '$1');
+
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('"'))
+    || (cleaned.startsWith("'") && cleaned.endsWith("'"))
+  ) {
+    try {
+      const unwrapped = JSON.parse(cleaned.replace(/^'/, '"').replace(/'$/, '"'));
+      if (typeof unwrapped === 'string') {
+        cleaned = unwrapped.trim();
+      }
+    } catch (_error) {
+    }
+  }
+
+  const candidate = extractFirstJsonBlock(cleaned);
+  if (candidate) {
+    try {
+      return JSON.parse(candidate);
+    } catch (_error) {
+      try {
+        return JSON.parse(candidate.replace(/'/g, '"'));
+      } catch (_errorAgain) {
+        return null;
+      }
+    }
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function resolveGeminiResponse(result) {
+  const maybeResponse = result?.response;
+  if (!maybeResponse) {
+    return null;
+  }
+
+  if (typeof maybeResponse?.then === 'function') {
+    try {
+      return await maybeResponse;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  return maybeResponse;
+}
+
+async function extractGeminiRawText(result) {
+  try {
+    const response = await resolveGeminiResponse(result);
+    if (!response) {
+      return '';
+    }
+
+    const segments = [];
+    const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
+    for (const candidate of candidates) {
+      const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+      for (const part of parts) {
+        if (typeof part?.text === 'string' && part.text) {
+          segments.push(part.text);
+        }
+      }
+    }
+
+    const merged = segments.join('').trim();
+    if (merged) {
+      return merged;
+    }
+
+    const legacyParts = response?.response?.candidates?.[0]?.content?.parts || [];
+    if (Array.isArray(legacyParts) && legacyParts.length) {
+      let fullText = '';
+      for (const part of legacyParts) {
+        if (typeof part?.text === 'string') {
+          fullText += part.text;
+        }
+      }
+      if (fullText.trim()) {
+        return fullText.trim();
+      }
+    }
+
+    try {
+      const text = typeof response.text === 'function' ? response.text() : '';
+      if (typeof text === 'string') {
+        return text.trim();
+      }
+    } catch (_error) {
+    }
+
+    return '';
+  } catch (_error) {
+    return '';
+  }
+}
+
+function inferRangeForFeature(name) {
+  const normalized = String(name || '').toLowerCase();
+  if (normalized.includes('interval') || normalized.includes('rr') || normalized.includes('qt') || normalized.includes('pq') || normalized.includes('st')) {
+    return [0, 400];
+  }
+  if (normalized.includes('peak') || normalized.includes('morph')) {
+    return [-5, 5];
+  }
+  return [0, 300];
+}
+
+function getFeatureRange(name) {
+  const knownRanges = {
+    age: [0, 120],
+    sex: [0, 1],
+    cp: [0, 3],
+    trestbps: [50, 250],
+    chol: [50, 600],
+    fbs: [0, 1],
+    restecg: [0, 2],
+    thalach: [50, 250],
+    exang: [0, 1],
+    oldpeak: [0, 10],
+    slope: [0, 2],
+    ca: [0, 3],
+    thal: [0, 3],
+  };
+
+  if (Object.prototype.hasOwnProperty.call(knownRanges, name)) {
+    return knownRanges[name];
+  }
+
+  return inferRangeForFeature(name);
+}
+
+function sanitizeExtractedFeatures(parsed) {
+  const clean = {};
+  for (const key of FEATURE_FIELDS) {
+    const rawValue = parsed?.[key];
+    const numericValue = typeof rawValue === 'number' ? rawValue : Number(rawValue);
+    if (!Number.isFinite(numericValue)) {
+      clean[key] = null;
+      continue;
+    }
+
+    const [min, max] = getFeatureRange(key);
+    clean[key] = numericValue >= min && numericValue <= max ? numericValue : null;
+  }
+  return clean;
+}
+
+function seededRandom(baseSeed, label) {
+  const hash = crypto.createHash('sha256').update(`${baseSeed}-${label}`).digest();
+  return hash.readUInt32BE(0) / 0xffffffff;
+}
+
+function randomFloat(baseSeed, label, min, max, decimals = 2) {
+  const random = seededRandom(baseSeed, label);
+  const value = min + random * (max - min);
+  return Number(value.toFixed(decimals));
+}
+
+function buildMockFeatures(filePath) {
+  let stats;
+  try {
+    stats = fs.statSync(filePath);
+  } catch (_error) {
+    stats = { size: Date.now(), mtimeMs: Date.now() };
+  }
+
+  const baseSeed = `${filePath}-${stats.size}-${stats.mtimeMs}`;
+  const mock = {};
+  for (const key of FEATURE_FIELDS) {
+    const [min, max] = getFeatureRange(key);
+    mock[key] = randomFloat(baseSeed, key, min, max, 2);
+  }
+  return mock;
+}
+
+async function callGeminiWithRetries(callFn, retries = GEMINI_RETRIES, baseDelayMs = GEMINI_RETRY_BASE_MS) {
+  let lastError;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      return await callFn();
+    } catch (error) {
+      lastError = error;
+      if (error?.status === 404) {
+        throw error;
+      }
+      const delayMs = baseDelayMs * (2 ** attempt);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
+
+function buildFeatureTemplate() {
+  const template = {};
+  for (const key of FEATURE_FIELDS) {
+    template[key] = null;
+  }
+  return JSON.stringify(template, null, 2);
+}
+
+async function extractFeaturesWithGoogleLLM(file) {
+  if (!process.env.GOOGLE_API_KEY || !genAI) {
+    if (ENABLE_MOCK_VISION) {
+      return buildMockFeatures(file.path);
+    }
+    throw new Error('GOOGLE_API_KEY is missing on server');
+  }
+
+  const imageBase64 = fs.readFileSync(file.path).toString('base64');
+  const mimeType = file.mimetype || 'image/png';
+  const prompt = [
+  'You are a STRICT medical OCR extraction engine.',
+  'TASK:',
+  'Extract ONLY numeric values that are CLEARLY visible in the medical report image.',
+  'CRITICAL RULES:',
+  'DO NOT estimate, infer, guess, or assume any values.',
+  'If a value is not explicitly written, return null.',
+  'If unsure, return null.',
+  'Never generate medical values from knowledge.',
+  'Output must be STRICT JSON only.',
+  'Return STRICT JSON only.',
+  'No markdown. No code fences. No leading text.',
+  'Response must start with "{" and end with "}".',
+  'JSON template (fill values or null):',
+  buildFeatureTemplate(),
+].join('\n\n');
+
+
+  let response = null;
+  let lastError = null;
+
+  for (const modelName of MODEL_CANDIDATES) {
+    try {
+      response = await callGeminiWithRetries(async () => {
+        const visionModel = genAI.getGenerativeModel({ model: modelName });
+        return visionModel.generateContent({
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  data: imageBase64,
+                  mimeType,
+                },
+              },
+            ],
+          }],
+          generationConfig: {
+            temperature: 0,
+            topP: 0.1,
+            topK: 1,
+            maxOutputTokens: 1024,
+            responseMimeType: 'application/json',
+          },
+        });
+      });
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (error?.status === 404) {
+        continue;
+      }
+    }
+  }
+
+  if (!response) {
+    if (ENABLE_MOCK_VISION) {
+      return buildMockFeatures(file.path);
+    }
+    throw new Error(lastError?.message || 'Gemini model failed for all candidates');
+  }
+
+  const rawText = await extractGeminiRawText(response);
+  const parsed = tolerantParseJson(rawText);
+  if (!parsed) {
+    if (ENABLE_MOCK_VISION) {
+      return buildMockFeatures(file.path);
+    }
+    throw new Error('Gemini returned invalid JSON');
+  }
+
+  return sanitizeExtractedFeatures(parsed);
 }
 
 function runPython(payload) {

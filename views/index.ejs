@@ -9,8 +9,54 @@
   <body>
     <main class="page">
       <section class="panel">
-        <h1>Holter Beat Prediction</h1>
-        <p>Enter the Holter beat features below to classify the beat type.</p>
+        <div class="topbar">
+          <div>
+            <h1>Arrhythmia-Ai Prediction</h1>
+            <p>Signed in as <strong><%= currentUser.fullName %></strong> (<%= currentUser.role %>)</p>
+          </div>
+          <div class="topbar-actions">
+            <a href="/dashboard" class="ghost-link">Dashboard</a>
+            <form method="POST" action="/logout">
+              <button type="submit" class="ghost-btn">Logout</button>
+            </form>
+          </div>
+        </div>
+
+        <p>Enter the arrhythmia features below to classify the beat type.</p>
+
+        <div class="redirect-row">
+          <a href="/dashboard" class="link-btn">Redirect to Dashboard</a>
+          <a href="/predict" class="ghost-link">New Prediction Form</a>
+        </div>
+
+        <section class="upload-box">
+          <h2>Upload Arrhythmia Image</h2>
+          <p>Select an ECG/arrhythmia image file to upload.</p>
+          <form method="POST" action="/upload-image" enctype="multipart/form-data" class="upload-form" id="image-upload-form">
+            <label class="field">
+              <span>Image File (JPG, PNG, WEBP)</span>
+              <input type="file" name="ecgImage" accept="image/*" required id="ecg-image-input" />
+            </label>
+            <div class="upload-actions">
+              <button type="submit" class="ghost-btn">Upload Image</button>
+              <button type="button" class="submit analyze-btn" id="analyze-image-btn">Analyze with AI</button>
+            </div>
+          </form>
+          <p class="analyze-status" id="analyze-status"></p>
+        </section>
+
+        <% if (uploadError) { %>
+          <div class="alert alert-error"><%= uploadError %></div>
+        <% } %>
+
+        <% if (uploadSuccess) { %>
+          <div class="alert alert-success">
+            <p class="label"><%= uploadSuccess %></p>
+            <% if (uploadedImageUrl) { %>
+              <img src="<%= uploadedImageUrl %>" alt="Uploaded arrhythmia" class="uploaded-preview" />
+            <% } %>
+          </div>
+        <% } %>
 
         <% if (errors.length) { %>
           <div class="alert alert-error">
@@ -40,7 +86,7 @@
           </div>
         <% } %>
 
-        <form method="POST" action="/predict" class="form-grid">
+        <form method="POST" action="/predict" class="form-grid" id="predict-form">
           <% featureNames.forEach(function(name) { %>
             <label class="field">
               <span><%= name %></span>
@@ -57,5 +103,6 @@
         </form>
       </section>
     </main>
+    <script src="/predict.js" defer></script>
   </body>
 </html>

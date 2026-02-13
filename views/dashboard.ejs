@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dashboard | Holter Beat Prediction</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <div class="topbar">
+          <div>
+            <h1>Dashboard</h1>
+            <p>Welcome, <strong><%= currentUser.fullName %></strong> (<%= currentUser.role %>)</p>
+          </div>
+          <form method="POST" action="/logout">
+            <button type="submit" class="ghost-btn">Logout</button>
+          </form>
+        </div>
+
+        <% if (typeof forbiddenMessage !== 'undefined' && forbiddenMessage) { %>
+          <div class="alert alert-error"><%= forbiddenMessage %></div>
+        <% } %>
+
+        <h2>Role Actions</h2>
+        <ul class="role-actions">
+          <% actions.forEach(function(action) { %>
+            <li><%= action %></li>
+          <% }) %>
+        </ul>
+
+        <% if (currentUser.role === 'admin' || currentUser.role === 'doctor') { %>
+          <div class="redirect-row">
+            <a href="/index" class="link-btn">Go to Index Page</a>
+            <a href="/predict" class="ghost-link">Prediction Form</a>
+          </div>
+        <% } else { %>
+          <p class="muted-note">Prediction access is limited to doctor and admin roles.</p>
+        <% } %>
+      </section>
+    </main>
+  </body>
+</html>
