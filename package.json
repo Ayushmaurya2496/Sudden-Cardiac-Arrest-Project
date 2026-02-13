@@ -1,0 +1,20 @@
+{
+  "name": "ecg-arrhythmia-prediction",
+  "version": "1.0.0",
+  "description": "Web UI + Python model for sudden cardiac death Holter predictions",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "body-parser": "^1.20.3",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}

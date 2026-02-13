@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Holter Beat Prediction</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <h1>Holter Beat Prediction</h1>
+        <p>Enter the Holter beat features below to classify the beat type.</p>
+
+        <% if (errors.length) { %>
+          <div class="alert alert-error">
+            <ul>
+              <% errors.forEach(function(message) { %>
+                <li><%= message %></li>
+              <% }) %>
+            </ul>
+          </div>
+        <% } %>
+
+        <% if (prediction) { %>
+          <div class="alert alert-success">
+            <h2>Prediction</h2>
+            <p class="label">Predicted Class: <strong><%= prediction.readableLabel %></strong></p>
+            <p>ID: <%= prediction.label_id %></p>
+            <% if (prediction.probabilities) { %>
+              <div class="probabilities">
+                <% Object.entries(prediction.probabilities).forEach(function(entry) { %>
+                  <div class="prob-row">
+                    <span><%= entry[0] %></span>
+                    <span><%= (entry[1] * 100).toFixed(2) %>%</span>
+                  </div>
+                <% }) %>
+              </div>
+            <% } %>
+          </div>
+        <% } %>
+
+        <form method="POST" action="/predict" class="form-grid">
+          <% featureNames.forEach(function(name) { %>
+            <label class="field">
+              <span><%= name %></span>
+              <input
+                type="number"
+                name="<%= name %>"
+                step="any"
+                value="<%= values[name] || '' %>"
+                required
+              />
+            </label>
+          <% }) %>
+          <button type="submit" class="submit">Predict Beat Type</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>
