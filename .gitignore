@@ -1,0 +1,5 @@
+node_modules/
+.venv/
+python/__pycache__/
+*.pyc
+python/model.joblib
