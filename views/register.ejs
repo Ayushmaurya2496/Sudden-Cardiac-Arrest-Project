@@ -3,15 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Register | Holter Beat Prediction</title>
+    <title>Register | Ai-Arrhythmia Prediction</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="https://unpkg.com/lucide@latest" defer></script>
   </head>
   <body>
     <main class="page page-auth">
+      <header class="app-header auth-header">
+        <div class="topbar">
+          <div class="topbar-main">
+            <h1>Create Account</h1>
+            <p>Register as doctor or patient to access the system.</p>
+          </div>
+          <div class="topbar-actions">
+            <a href="/login" class="ghost-link"><i data-lucide="log-in" class="icon"></i>Login</a>
+          </div>
+        </div>
+      </header>
       <section class="panel auth-panel">
-        <h1>Create Account</h1>
-        <p>Register as doctor or patient to access the system.</p>
-
         <% if (error) { %>
           <div class="alert alert-error"><%= error %></div>
         <% } %>
@@ -21,6 +30,7 @@
         <% } %>
 
         <form method="POST" action="/register" class="auth-form">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
           <label class="field">
             <span>Full Name</span>
             <input type="text" name="fullName" value="<%= values.fullName || '' %>" required />
@@ -49,11 +59,18 @@
             <input type="password" name="confirmPassword" minlength="8" required />
           </label>
 
-          <button type="submit" class="submit">Register</button>
+          <button type="submit" class="submit"><i data-lucide="user-plus" class="icon"></i>Register</button>
         </form>
 
         <p class="muted-note">Already have an account? <a href="/login" class="auth-link">Login here</a></p>
       </section>
     </main>
+    <script>
+      window.addEventListener('DOMContentLoaded', function () {
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+      });
+    </script>
   </body>
 </html>

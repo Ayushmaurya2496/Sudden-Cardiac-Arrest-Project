@@ -3,113 +3,355 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Holter Beat Prediction</title>
+    <meta name="csrf-token" content="<%= csrfToken %>" />
+    <title>Ai-Arrhythmia Prediction</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="https://unpkg.com/lucide@latest" defer></script>
   </head>
   <body>
     <main class="page">
-      <section class="panel">
+      <header class="app-header">
         <div class="topbar">
-          <div>
-            <h1>Arrhythmia-Ai Prediction</h1>
+          <div class="topbar-main">
+            <h1>Ai-Arrhythmia Prediction</h1>
             <p>Signed in as <strong><%= currentUser.fullName %></strong> (<%= currentUser.role %>)</p>
+            <div class="redirect-row header-redirect-row">
+              <a href="#analyze-image-btn" class="link-btn"><i data-lucide="activity" class="icon"></i>Analyze ECG</a>
+              <a href="/history" class="ghost-link"><i data-lucide="history" class="icon"></i>History</a>
+            </div>
           </div>
           <div class="topbar-actions">
-            <a href="/dashboard" class="ghost-link">Dashboard</a>
-            <a href="/history" class="ghost-link">History</a>
             <form method="POST" action="/logout">
-              <button type="submit" class="ghost-btn">Logout</button>
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+              <button type="submit" class="ghost-btn"><i data-lucide="log-out" class="icon"></i>Logout</button>
             </form>
           </div>
         </div>
+      </header>
+      <section class="panel">
+        <%
+          const hasUploaded = Boolean(uploadSuccess || uploadedImageUrl);
+          const hasFeatureInput = featureNames.some(function(name) {
+            const raw = values && values[name];
+            return raw !== undefined && raw !== null && String(raw).trim() !== '';
+          });
+          const hasResult = Boolean(prediction);
+        %>
 
-        <p>Enter the arrhythmia features below to classify the beat type.</p>
-
-        <div class="redirect-row">
-          <a href="/dashboard" class="link-btn">Redirect to Dashboard</a>
-          <a href="/predict" class="ghost-link">New Prediction Form</a>
-          <a href="/history" class="ghost-link">View History</a>
-        </div>
-
-        <section class="upload-box">
-          <h2>Upload Arrhythmia Image</h2>
-          <p>Select an ECG/arrhythmia image file to upload.</p>
-          <form method="POST" action="/upload-image" enctype="multipart/form-data" class="upload-form" id="image-upload-form">
-            <label class="field">
-              <span>Image File (JPG, PNG, WEBP)</span>
-              <input type="file" name="ecgImage" accept="image/*" required id="ecg-image-input" />
-            </label>
-            <div class="upload-actions">
-              <button type="submit" class="ghost-btn">Upload Image</button>
-              <button type="button" class="submit analyze-btn" id="analyze-image-btn">Analyze with AI</button>
-            </div>
-          </form>
-          <p class="analyze-status" id="analyze-status"></p>
+        <section class="stepper" aria-label="Prediction workflow">
+          <div class="step-item <%= hasUploaded ? 'is-complete' : 'is-active' %>">
+            <span class="step-badge">1</span>
+            <span class="step-text">Upload</span>
+          </div>
+          <div class="step-line <%= hasUploaded ? 'is-complete' : '' %>" aria-hidden="true"></div>
+          <div class="step-item <%= hasFeatureInput ? 'is-complete' : (hasUploaded ? 'is-active' : '') %>">
+            <span class="step-badge">2</span>
+            <span class="step-text">Features</span>
+          </div>
+          <div class="step-line <%= hasFeatureInput ? 'is-complete' : '' %>" aria-hidden="true"></div>
+          <div class="step-item <%= hasResult ? 'is-complete is-active' : '' %>">
+            <span class="step-badge">3</span>
+            <span class="step-text">Result</span>
+          </div>
         </section>
 
-        <% if (uploadError) { %>
-          <div class="alert alert-error"><%= uploadError %></div>
-        <% } %>
+        <p class="predict-intro">Enter the arrhythmia features below to classify the beat type.</p>
 
-        <% if (uploadSuccess) { %>
-          <div class="alert alert-success">
-            <p class="label"><%= uploadSuccess %></p>
-            <% if (uploadedImageUrl) { %>
-              <img src="<%= uploadedImageUrl %>" alt="Uploaded arrhythmia" class="uploaded-preview" />
-            <% } %>
-          </div>
-        <% } %>
+        <div class="predict-layout">
+          <aside class="predict-left">
+            <section class="upload-box">
+              <h2>Step 1 · Upload Image</h2>
+              <p>Select an ECG/arrhythmia image file to upload.</p>
+              <form method="POST" action="/upload-image" enctype="multipart/form-data" class="upload-form" id="image-upload-form">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+                <label class="field">
+                  <span>Image File (JPG, PNG, WEBP)</span>
+                  <input type="file" name="ecgImage" accept="image/*" required id="ecg-image-input" />
+                </label>
+                <div class="upload-actions">
+                  <button type="submit" class="ghost-btn"><i data-lucide="upload" class="icon"></i>Upload Image</button>
+                  <button type="button" class="submit analyze-btn" id="analyze-image-btn"><i data-lucide="sparkles" class="icon"></i>Analyze with AI</button>
+                </div>
+              </form>
+              <p class="analyze-status" id="analyze-status"></p>
 
-        <% if (errors.length) { %>
-          <div class="alert alert-error">
-            <ul>
-              <% errors.forEach(function(message) { %>
-                <li><%= message %></li>
-              <% }) %>
-            </ul>
-          </div>
-        <% } %>
-
-        <form method="POST" action="/predict" class="form-grid" id="predict-form">
-          <% featureNames.forEach(function(name) { %>
-            <label class="field">
-              <span><%= name %></span>
-              <input
-                type="number"
-                name="<%= name %>"
-                step="any"
-                value="<%= values[name] || '' %>"
-                required
-              />
-            </label>
-          <% }) %>
-          <button type="submit" class="submit">Predict Beat Type</button>
-          <% if (prediction) { %>
-            <div class="alert alert-success prediction-result">
-              <div class="prediction-core">
-                <h2>Prediction</h2>
-                <p class="label">Predicted Class: <strong><%= prediction.readableLabel %></strong></p>
-                <p>ID: <%= prediction.label_id %></p>
-                <% if (prediction.probabilities) { %>
-                  <div class="probabilities">
-                    <% Object.entries(prediction.probabilities).forEach(function(entry) { %>
-                      <div class="prob-row">
-                        <span><%= entry[0] %></span>
-                        <span><%= (entry[1] * 100).toFixed(2) %>%</span>
-                      </div>
-                    <% }) %>
+              <section class="waveform-box" aria-label="ECG waveform preview">
+                <h3>ECG Waveform Preview</h3>
+                <% if (uploadedImageUrl) { %>
+                  <img src="<%= uploadedImageUrl %>" alt="ECG waveform preview" class="waveform-image" />
+                <% } else { %>
+                  <div class="waveform-placeholder" aria-hidden="true">
+                    <svg id="ecg-waveform-svg" viewBox="0 0 480 120" role="img" aria-label="Generated ECG waveform">
+                      <path id="ecg-waveform-path" d="M0 70 L60 70 L78 48 L90 92 L104 30 L116 82 L132 70 L198 70 L214 58 L226 80 L240 22 L254 88 L274 70 L342 70 L358 55 L370 82 L386 34 L400 86 L418 70 L480 70" />
+                    </svg>
+                    <p id="ecg-waveform-caption">Enter or analyze features to generate waveform</p>
                   </div>
                 <% } %>
+              </section>
+
+              <div class="ai-skeleton" id="ai-skeleton" hidden aria-live="polite">
+                <div class="ai-skeleton-bar"></div>
+                <div class="ai-skeleton-bar short"></div>
+                <div class="ai-skeleton-grid">
+                  <div class="ai-skeleton-cell"></div>
+                  <div class="ai-skeleton-cell"></div>
+                  <div class="ai-skeleton-cell"></div>
+                  <div class="ai-skeleton-cell"></div>
+                </div>
               </div>
-              <div class="prediction-description">
-                <h3>Class Insight</h3>
-                <p><%= predictionDescription || 'No additional context available.' %></p>
+            </section>
+
+            <% if (uploadError) { %>
+              <div class="alert alert-error"><%= uploadError %></div>
+            <% } %>
+
+            <% if (uploadSuccess) { %>
+              <div class="alert alert-success">
+                <p class="label"><%= uploadSuccess %></p>
+                <% if (uploadedImageUrl) { %>
+                  <img src="<%= uploadedImageUrl %>" alt="Uploaded arrhythmia" class="uploaded-preview" />
+                <% } %>
+              </div>
+            <% } %>
+          </aside>
+
+          <section class="predict-right">
+            <% if (errors.length) { %>
+              <div class="alert alert-error">
+                <ul>
+                  <% errors.forEach(function(message) { %>
+                    <li><%= message %></li>
+                  <% }) %>
+                </ul>
+              </div>
+            <% } %>
+
+            <form method="POST" action="/predict" class="feature-form" id="predict-form">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+              <p class="step-title">Step 2 · Fill Features</p>
+              <div class="form-grid">
+                <% featureNames.forEach(function(name) { %>
+                  <label class="field">
+                    <span><%= name %></span>
+                    <input
+                      type="number"
+                      name="<%= name %>"
+                      step="any"
+                      value="<%= values[name] || '' %>"
+                      required
+                    />
+                  </label>
+                <% }) %>
+              </div>
+              <button type="submit" class="submit feature-submit"><i data-lucide="cpu" class="icon"></i>Step 3 · Analyze & Get Result</button>
+            </form>
+          </section>
+        </div>
+
+        <% if (prediction) { %>
+          <% 
+            const normalizedLabel = String(prediction.readableLabel || prediction.label || '').toUpperCase();
+            const predictionBadgeClass = ({
+              N: 'status-chip-n',
+              VEB: 'status-chip-veb',
+              F: 'status-chip-f',
+              SVEB: 'status-chip-sveb',
+              Q: 'status-chip-q',
+            }[normalizedLabel]) || 'status-chip-default';
+            const predictionRiskStripClass = ({
+              N: 'prediction-risk-normal',
+              VEB: 'prediction-risk-veb',
+              SVEB: 'prediction-risk-sveb',
+              F: 'prediction-risk-f',
+              Q: 'prediction-risk-q',
+            }[normalizedLabel]) || 'prediction-risk-default';
+
+            const probabilityValues = prediction.probabilities
+              ? Object.values(prediction.probabilities)
+                  .map(function(value) { return Number(value); })
+                  .filter(function(value) { return Number.isFinite(value); })
+              : [];
+            const confidencePct = probabilityValues.length
+              ? (Math.max.apply(null, probabilityValues) * 100)
+              : null;
+            const predictionTimestamp = new Date().toLocaleString();
+            const displayModelName = 'ECG XGBoost Classifier';
+          %>
+          <div id="prediction-result-card" class="alert alert-success prediction-result <%= predictionRiskStripClass %>">
+            <div class="prediction-core">
+              <h2>Step 3 · Result</h2>
+              <p class="label">Predicted Class:
+                  <span class="status-chip <%= predictionBadgeClass %>"><%= prediction.readableLabel %></span>
+              </p>
+              <p>ID: <%= prediction.label_id %></p>
+
+              <div class="prediction-trust-meta" aria-label="Prediction transparency metadata">
+                <div class="trust-row">
+                  <span>Confidence</span>
+                  <strong><%= confidencePct === null ? 'N/A' : `${confidencePct.toFixed(2)}%` %></strong>
+                </div>
+                <div class="trust-row">
+                  <span>Model</span>
+                  <strong><%= displayModelName %></strong>
+                </div>
+                <div class="trust-row">
+                  <span>Timestamp</span>
+                  <strong><%= predictionTimestamp %></strong>
+                </div>
+              </div>
+
+              <div class="upload-actions">
+                <a href="/predict-report" class="ghost-btn"><i data-lucide="download" class="icon"></i>Download Report</a>
+              </div>
+
+              <% if (prediction.probabilities) { %>
+                <div class="probabilities probability-bars" aria-label="Prediction confidence bars">
+                  <% Object.entries(prediction.probabilities).forEach(function(entry) { 
+                    const classLabel = String(entry[0] || '').toUpperCase();
+                    const raw = Number(entry[1]);
+                    const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw * 100)) : 0;
+                    const normalized = pct / 100;
+                    const glowOpacity = pct <= 0
+                      ? 0
+                      : Math.min(0.75, 0.08 + normalized * 0.52);
+                    const glowSize = pct <= 0
+                      ? 0
+                      : Math.round(4 + normalized * 14);
+                    const fillClass = ({
+                      N: 'probability-bar-fill-n',
+                      VEB: 'probability-bar-fill-veb',
+                      SVEB: 'probability-bar-fill-sveb',
+                      F: 'probability-bar-fill-f',
+                      Q: 'probability-bar-fill-q',
+                    }[classLabel]) || 'probability-bar-fill-default';
+                    const glowRgb = ({
+                      N: '34, 197, 94',
+                      VEB: '239, 68, 68',
+                      SVEB: '245, 158, 11',
+                      F: '139, 92, 246',
+                      Q: '100, 116, 139',
+                    }[classLabel]) || '148, 163, 184';
+                  %>
+                    <div class="probability-bar-row">
+                      <div class="probability-bar-meta">
+                        <span class="probability-bar-label"><%= entry[0] %></span>
+                        <span class="probability-bar-value"><%= pct.toFixed(1) %>%</span>
+                      </div>
+                      <div class="probability-bar-track" aria-hidden="true">
+                        <span
+                          class="probability-bar-fill <%= fillClass %>"
+                          data-width="<%= pct.toFixed(2) %>"
+                          data-glow-opacity="<%= glowOpacity.toFixed(3) %>"
+                          data-glow-size="<%= glowSize %>"
+                          data-glow-rgb="<%= glowRgb %>"
+                        ></span>
+                      </div>
+                    </div>
+                  <% }) %>
+                </div>
+              <% } %>
+            </div>
+            <div class="prediction-description">
+              <h3>Class Insight</h3>
+              <p><%= predictionDescription || 'No additional context available.' %></p>
+            </div>
+          </div>
+          <% 
+            const featureSource = (typeof submittedFeatures !== 'undefined' && submittedFeatures && typeof submittedFeatures === 'object')
+              ? submittedFeatures
+              : values;
+
+            const groupedByMetric = {};
+            featureNames.forEach(function(name) {
+              const match = String(name).match(/^([01])_(.+)$/);
+              if (!match) {
+                return;
+              }
+
+              const lead = match[1];
+              const metric = match[2];
+              if (!groupedByMetric[metric]) {
+                groupedByMetric[metric] = {
+                  metric,
+                  category: metric.includes('morph')
+                    ? 'morph'
+                    : metric.includes('interval')
+                      ? 'interval'
+                      : metric.toLowerCase().includes('rr')
+                        ? 'rr'
+                        : metric.includes('peak')
+                          ? 'peak'
+                          : 'other',
+                  lead0: null,
+                  lead1: null,
+                };
+              }
+
+              const numeric = Number(featureSource?.[name]);
+              groupedByMetric[metric][lead === '0' ? 'lead0' : 'lead1'] = Number.isFinite(numeric)
+                ? numeric
+                : null;
+            });
+
+            const featurePairSeries = Object.values(groupedByMetric)
+              .sort(function(a, b) { return a.metric.localeCompare(b.metric); });
+
+            const hasFeaturePairData = featurePairSeries.some(function(item) {
+              return item.lead0 !== null || item.lead1 !== null;
+            });
+          %>
+          <section class="chart-card" id="feature-chart-card" aria-live="polite">
+            <div class="chart-header">
+              <div>
+                <h3>Feature Comparison Visualization</h3>
+                <p>Interactive lead-wise comparison across ECG feature groups.</p>
               </div>
             </div>
-          <% } %>
-        </form>
+            <% if (hasFeaturePairData) { %>
+              <div class="feature-chart-controls">
+                <label for="feature-group-filter">Feature Group</label>
+                <select id="feature-group-filter" class="feature-group-filter">
+                  <option value="all">All</option>
+                  <option value="rr">RR</option>
+                  <option value="peak">Peaks</option>
+                  <option value="interval">Intervals</option>
+                  <option value="morph">Morphology</option>
+                </select>
+              </div>
+              <div class="feature-svg-shell" id="feature-svg-shell">
+                <svg id="feature-interactive-chart" aria-label="Interactive feature comparison chart" role="img"></svg>
+                <div id="feature-chart-tooltip" class="feature-chart-tooltip" hidden></div>
+              </div>
+              <div class="feature-chart-legend">
+                <span><i class="dot dot-lead0"></i>Lead 0</span>
+                <span><i class="dot dot-lead1"></i>Lead 1</span>
+              </div>
+              <div
+                id="feature-pair-series-data"
+                data-series='<%- JSON.stringify(featurePairSeries) %>'
+                hidden
+              ></div>
+            <% } else { %>
+              <p class="chart-empty-static">No feature values were provided.</p>
+            <% } %>
+          </section>
+        <% } %>
       </section>
     </main>
     <script src="/predict.js" defer></script>
+    <script>
+      window.addEventListener('DOMContentLoaded', function () {
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+
+        const resultCard = document.getElementById('prediction-result-card');
+        if (resultCard) {
+          window.requestAnimationFrame(function () {
+            resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          });
+        }
+      });
+    </script>
   </body>
 </html>

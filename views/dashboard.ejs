@@ -3,43 +3,283 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Dashboard | Holter Beat Prediction</title>
+    <title>Dashboard | Ai-Arrhythmia Prediction</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="https://unpkg.com/lucide@latest" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
   </head>
   <body>
     <main class="page">
-      <section class="panel">
+      <header class="app-header">
         <div class="topbar">
-          <div>
+          <div class="topbar-main">
             <h1>Dashboard</h1>
             <p>Welcome, <strong><%= currentUser.fullName %></strong> (<%= currentUser.role %>)</p>
+            <% if (currentUser) { %>
+              <div class="redirect-row header-redirect-row">
+                <a href="/dashboard" class="link-btn"><i data-lucide="layout-dashboard" class="icon"></i>Dashboard</a>
+                <a href="/predict" class="ghost-link"><i data-lucide="activity" class="icon"></i>Prediction Form</a>
+                <a href="/history" class="ghost-link"><i data-lucide="history" class="icon"></i>Prediction History</a>
+              </div>
+            <% } %>
           </div>
-          <form method="POST" action="/logout">
-            <button type="submit" class="ghost-btn">Logout</button>
-          </form>
+          <div class="topbar-actions">
+            <form method="POST" action="/logout">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+              <button type="submit" class="ghost-btn"><i data-lucide="log-out" class="icon"></i>Logout</button>
+            </form>
+          </div>
         </div>
-
+      </header>
+      <section class="panel">
         <% if (typeof forbiddenMessage !== 'undefined' && forbiddenMessage) { %>
           <div class="alert alert-error"><%= forbiddenMessage %></div>
         <% } %>
 
-        <h2>Role Actions</h2>
-        <ul class="role-actions">
-          <% actions.forEach(function(action) { %>
-            <li><%= action %></li>
-          <% }) %>
-        </ul>
+        <% 
+          const safeDashboardData = (typeof dashboardData !== 'undefined' && dashboardData) ? dashboardData : {};
+          const safeCanPredict = (typeof canPredict !== 'undefined')
+            ? Boolean(canPredict)
+            : Boolean(currentUser);
+          const data = safeDashboardData;
+          const classCounts = {
+            N: Number((data.classCounts && data.classCounts.N) || 0),
+            SVEB: Number((data.classCounts && data.classCounts.SVEB) || 0),
+            VEB: Number((data.classCounts && data.classCounts.VEB) || 0),
+            F: Number((data.classCounts && data.classCounts.F) || 0),
+            Q: Number((data.classCounts && data.classCounts.Q) || 0),
+          };
+          const recent = Array.isArray(data.recentPredictions) ? data.recentPredictions : [];
+          const alerts = Array.isArray(data.highRiskAlerts) ? data.highRiskAlerts : [];
+          const trendLabels = Array.isArray(data.trendLabels) ? data.trendLabels : [];
+          const trendScores = Array.isArray(data.trendScores) ? data.trendScores : [];
 
-        <% if (currentUser.role === 'admin' || currentUser.role === 'doctor') { %>
-          <div class="redirect-row">
-            <a href="/index" class="link-btn">Go to Index Page</a>
-            <a href="/predict" class="ghost-link">Prediction Form</a>
-            <a href="/history" class="ghost-link">Prediction History</a>
-          </div>
+          const statusMap = {
+            N: { label: 'Normal', chip: 'status-chip-n' },
+            SVEB: { label: 'SVEB', chip: 'status-chip-sveb' },
+            VEB: { label: 'VEB', chip: 'status-chip-veb' },
+            F: { label: 'Fusion', chip: 'status-chip-f' },
+            Q: { label: 'Unknown', chip: 'status-chip-q' },
+          };
+
+          function fmtPercent(value) {
+            return Number.isFinite(Number(value)) ? (Number(value) * 100).toFixed(1) + '%' : '--';
+          }
+
+          function bestProb(entry) {
+            if (!entry || !entry.probabilities) return null;
+            const vals = Object.values(entry.probabilities).map(Number).filter((v) => Number.isFinite(v));
+            if (!vals.length) return null;
+            return Math.max(...vals);
+          }
+
+          function normalizeLabel(value) {
+            const label = String(value || '').trim().toUpperCase();
+            if (label === 'N' || label.includes('NORMAL')) return 'N';
+            if (label === 'SVEB' || label.includes('SUPRAVENT')) return 'SVEB';
+            if (label === 'VEB' || label.includes('VENTRIC')) return 'VEB';
+            if (label === 'F' || label.includes('FUSION')) return 'F';
+            if (label === 'Q' || label.includes('UNKNOWN') || label.includes('UNCLASS')) return 'Q';
+            return 'Q';
+          }
+
+          function timeAgo(dateValue) {
+            if (!dateValue) return 'Unknown';
+            const date = new Date(dateValue);
+            const diffMins = Math.max(1, Math.floor((Date.now() - date.getTime()) / 60000));
+            if (diffMins < 60) return diffMins + ' min ago';
+            const diffHours = Math.floor(diffMins / 60);
+            if (diffHours < 24) return diffHours + ' hr ago';
+            const diffDays = Math.floor(diffHours / 24);
+            return diffDays + ' day ago';
+          }
+        %>
+
+        <% if (safeCanPredict) { %>
+          <section class="dashboard-stats-grid">
+            <article class="dashboard-stat-card">
+              <div class="dashboard-stat-icon"><i data-lucide="scan-heart" class="icon"></i></div>
+              <p class="dashboard-stat-label">Total Scans</p>
+              <h3 class="dashboard-stat-value"><%= data.totalScans || 0 %></h3>
+            </article>
+
+            <article class="dashboard-stat-card dashboard-class-card">
+              <div class="dashboard-stat-icon is-warning"><i data-lucide="pie-chart" class="icon"></i></div>
+              <p class="dashboard-stat-label">Class Cases</p>
+              <div class="dashboard-class-counts">
+                <div class="dashboard-class-item"><span class="status-chip status-chip-n">N</span><strong><%= classCounts.N %></strong></div>
+                <div class="dashboard-class-item"><span class="status-chip status-chip-sveb">SVEB</span><strong><%= classCounts.SVEB %></strong></div>
+                <div class="dashboard-class-item"><span class="status-chip status-chip-veb">VEB</span><strong><%= classCounts.VEB %></strong></div>
+                <div class="dashboard-class-item"><span class="status-chip status-chip-f">F</span><strong><%= classCounts.F %></strong></div>
+                <div class="dashboard-class-item"><span class="status-chip status-chip-q">Q</span><strong><%= classCounts.Q %></strong></div>
+              </div>
+            </article>
+          </section>
+
+          <section class="dashboard-action-row">
+            <a href="/predict" class="dashboard-action-btn primary"><i data-lucide="activity" class="icon"></i>Analyze New ECG</a>
+            <a href="/history" class="dashboard-action-btn"><i data-lucide="history" class="icon"></i>Review History</a>
+          </section>
+
+          <section class="dashboard-main-grid">
+            <div class="dashboard-column-main">
+              <article class="dashboard-widget">
+                <div class="dashboard-widget-head">
+                  <h2>Recent Predictions</h2>
+                  <a href="/history" class="ghost-link">View All</a>
+                </div>
+
+                <% if (!recent.length) { %>
+                  <p class="muted-note">No predictions available yet.</p>
+                <% } else { %>
+                  <ul class="dashboard-recent-list">
+                    <% recent.forEach((entry) => { 
+                      const code = normalizeLabel(entry.predictionLabel);
+                      const status = statusMap[code] || { label: code || 'Unknown', chip: 'status-chip-q' };
+                      const confidence = bestProb(entry);
+                    %>
+                      <li class="dashboard-recent-item">
+                        <div class="dashboard-recent-left">
+                          <span class="status-chip <%= status.chip %>"><%= status.label %></span>
+                          <div>
+                            <p class="dashboard-recent-title">Beat classified as <%= status.label %></p>
+                            <p class="muted-note"><%= timeAgo(entry.createdAt) %></p>
+                          </div>
+                        </div>
+                        <strong class="dashboard-recent-confidence"><%= confidence !== null ? (confidence * 100).toFixed(1) + '%' : '--' %></strong>
+                      </li>
+                    <% }) %>
+                  </ul>
+                <% } %>
+              </article>
+
+              <article class="dashboard-widget">
+                <div class="dashboard-widget-head">
+                  <h2>Risk Trend</h2>
+                  <span class="muted-note">Last 12 scans</span>
+                </div>
+                <div class="dashboard-chart-wrap">
+                  <canvas id="dashboardRiskChart" aria-label="Risk trend chart" role="img"></canvas>
+                </div>
+              </article>
+            </div>
+
+            <aside class="dashboard-column-side">
+              <article class="dashboard-widget">
+                <div class="dashboard-widget-head">
+                  <h2>High Risk Alerts</h2>
+                </div>
+                <% if (!alerts.length) { %>
+                  <p class="muted-note">No high-risk cases detected recently.</p>
+                <% } else { %>
+                  <ul class="dashboard-alert-list">
+                    <% alerts.forEach((entry) => { %>
+                      <li class="dashboard-alert-item">
+                        <div>
+                          <p class="dashboard-alert-title">VEB detected</p>
+                          <p class="muted-note"><%= timeAgo(entry.createdAt) %></p>
+                        </div>
+                        <span class="status-chip status-chip-veb"><%= fmtPercent(entry.probabilities && entry.probabilities.VEB) %></span>
+                      </li>
+                    <% }) %>
+                  </ul>
+                <% } %>
+              </article>
+
+              <article class="dashboard-widget">
+                <div class="dashboard-widget-head">
+                  <h2>Model Status</h2>
+                </div>
+                <ul class="dashboard-model-list">
+                  <li>
+                    <span>System</span>
+                    <strong class="dashboard-model-pill <%= data.modelStatus && data.modelStatus.isActive ? 'is-active' : 'is-inactive' %>">
+                      <%= data.modelStatus && data.modelStatus.isActive ? 'Active' : 'Offline' %>
+                    </strong>
+                  </li>
+                  <li><span>Model Accuracy</span><strong><%= (data.modelStatus && data.modelStatus.accuracy) || 99 %>%</strong></li>
+                  <li><span>Last Scan</span><strong><%= timeAgo(data.modelStatus && data.modelStatus.lastScanAt) %></strong></li>
+                </ul>
+              </article>
+
+            </aside>
+          </section>
         <% } else { %>
-          <p class="muted-note">Prediction access is limited to doctor and admin roles.</p>
+          <h2>Role Actions</h2>
+          <ul class="role-actions">
+            <% actions.forEach(function(action) { %>
+              <li><%= action %></li>
+            <% }) %>
+          </ul>
+          <p class="muted-note">Please login to access prediction features.</p>
         <% } %>
       </section>
     </main>
+    <script id="dashboardTrendData" type="application/json"><%- JSON.stringify({ labels: (safeDashboardData && safeDashboardData.trendLabels) || [], scores: (safeDashboardData && safeDashboardData.trendScores) || [] }) %></script>
+    <script>
+      window.addEventListener('DOMContentLoaded', function () {
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+
+        const chartCanvas = document.getElementById('dashboardRiskChart');
+        const trendPayload = document.getElementById('dashboardTrendData');
+        let trendLabels = [];
+        let trendScores = [];
+
+        if (trendPayload && trendPayload.textContent) {
+          try {
+            const parsed = JSON.parse(trendPayload.textContent);
+            trendLabels = Array.isArray(parsed.labels) ? parsed.labels : [];
+            trendScores = Array.isArray(parsed.scores) ? parsed.scores : [];
+          } catch (error) {
+            trendLabels = [];
+            trendScores = [];
+          }
+        }
+
+        if (chartCanvas && window.Chart && trendLabels.length && trendScores.length) {
+          const css = getComputedStyle(document.documentElement);
+          const stroke = css.getPropertyValue('--accent').trim() || '#4f9da6';
+          const grid = css.getPropertyValue('--line').trim() || '#24343d';
+          const text = css.getPropertyValue('--muted').trim() || '#9ab0bf';
+
+          new window.Chart(chartCanvas, {
+            type: 'line',
+            data: {
+              labels: trendLabels,
+              datasets: [{
+                label: 'Risk Score',
+                data: trendScores,
+                borderColor: stroke,
+                backgroundColor: 'rgba(79, 157, 166, 0.18)',
+                pointRadius: 3,
+                pointHoverRadius: 5,
+                tension: 0.35,
+                fill: true,
+              }],
+            },
+            options: {
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { display: false },
+              },
+              scales: {
+                y: {
+                  min: 0,
+                  max: 100,
+                  grid: { color: grid },
+                  ticks: { color: text },
+                },
+                x: {
+                  grid: { color: 'transparent' },
+                  ticks: { color: text },
+                },
+              },
+            },
+          });
+        }
+      });
+    </script>
   </body>
 </html>

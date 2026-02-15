@@ -1,7 +1,7 @@
 {
-  "name": "ecg-arrhythmia-prediction",
+  "name": "ai-arrhythmia-prediction",
   "version": "1.0.0",
-  "description": "Web UI + Python model for sudden cardiac death Holter predictions",
+  "description": "Ai-Arrhythmia Prediction web app with Python model and Node.js UI",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -10,6 +10,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@dr.pogodin/csurf": "^1.16.8",
     "@google/generative-ai": "^0.24.1",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.3",

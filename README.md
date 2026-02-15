@@ -1,4 +1,4 @@
-# ECG Holter Beat Prediction (Same Technology Stack)
+# Ai-Arrhythmia Prediction
 
 This project replicates the same stack as your reference project:
 - **Python + XGBoost** for model training and prediction

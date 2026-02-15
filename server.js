@@ -10,6 +10,7 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const cors = require('cors');
 const helmet = require('helmet');
+const csrf = require('@dr.pogodin/csurf');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { spawn } = require('child_process');
 
@@ -41,7 +42,6 @@ const TEXT_MODEL_CANDIDATES = [
   'gemini-1.5-flash-latest',
   'gemini-1.5-pro',
   'gemini-2.0-flash-exp',
-  'gemini-1.0-pro',
 ].filter(Boolean);
 
 const defaultPython = process.platform === 'win32'
@@ -69,6 +69,7 @@ const CLASS_SUMMARIES = {
   SVEB: 'Supraventricular ectopic beat arising above the ventricles, often narrow and premature.',
   VEB: 'Ventricular ectopic beat with wide QRS indicating ventricular origin; monitor for frequency or runs.',
 };
+const MODEL_DISPLAY_NAME = 'ECG XGBoost Classifier';
 const classDescriptionCache = new Map();
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -106,8 +107,13 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     maxAge: 1000 * 60 * 60 * 8,
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
   },
 }));
+
+app.use(csrf());
 
 const seedUsers = [
   { username: 'admin', password: 'admin123', role: 'admin', fullName: 'System Admin' },
@@ -140,6 +146,7 @@ const PredictionHistory = mongoose.models.PredictionHistory
 
 app.use((req, res, next) => {
   res.locals.currentUser = req.session.user || null;
+  res.locals.csrfToken = req.csrfToken();
   next();
 });
 
@@ -274,15 +281,140 @@ app.post('/logout', requireAuth, (req, res) => {
   });
 });
 
-app.get('/dashboard', requireAuth, (req, res) => {
+app.get('/dashboard', requireAuth, async (req, res) => {
   const roleActions = {
     admin: ['Monitor all users', 'Review prediction activity', 'Manage system settings'],
     doctor: ['Run ECG beat predictions', 'Review patient trends', 'Track uncertain predictions'],
     patient: ['View your profile', 'Check your prediction history', 'Consult your doctor'],
   };
 
+  const activeRole = req.session.user?.role;
+  const canPredict = true;
+
+  const filter = activeRole === 'patient'
+    ? { username: req.session.user.username }
+    : {};
+
+  let dashboardData = {
+    totalScans: 0,
+    highRiskCount: 0,
+    moderateCount: 0,
+    normalCount: 0,
+    classCounts: {
+      N: 0,
+      SVEB: 0,
+      VEB: 0,
+      F: 0,
+      Q: 0,
+    },
+    recentPredictions: [],
+    highRiskAlerts: [],
+    trendLabels: [],
+    trendScores: [],
+    modelStatus: {
+      isActive: true,
+      accuracy: 97,
+      lastScanAt: null,
+    },
+  };
+
+  function computeRiskScore(entry) {
+    const probabilities = entry?.probabilities && typeof entry.probabilities === 'object'
+      ? entry.probabilities
+      : null;
+    if (probabilities && probabilities.VEB !== undefined) {
+      const veb = Number(probabilities.VEB);
+      if (Number.isFinite(veb)) {
+        return Math.max(0, Math.min(100, veb * 100));
+      }
+    }
+
+    const label = String(entry?.predictionLabel || '').toUpperCase();
+    const fallback = {
+      VEB: 95,
+      SVEB: 65,
+      F: 75,
+      Q: 45,
+      N: 20,
+    };
+    return fallback[label] || 35;
+  }
+
+  function normalizePredictionLabel(value) {
+    const label = String(value || '').trim().toUpperCase();
+    if (label === 'N' || label.includes('NORMAL')) return 'N';
+    if (label === 'SVEB' || label.includes('SUPRAVENT')) return 'SVEB';
+    if (label === 'VEB' || label.includes('VENTRIC')) return 'VEB';
+    if (label === 'F' || label.includes('FUSION')) return 'F';
+    if (label === 'Q' || label.includes('UNKNOWN') || label.includes('UNCLASS')) return 'Q';
+    return 'Q';
+  }
+
+  try {
+    const [totalScans, allLabelEntries, recentEntries] = await Promise.all([
+      PredictionHistory.countDocuments(filter),
+      PredictionHistory.find(filter)
+        .select({ predictionLabel: 1 })
+        .lean(),
+      PredictionHistory.find(filter)
+        .sort({ createdAt: -1 })
+        .limit(24)
+        .lean(),
+    ]);
+
+    const classCounts = {
+      N: 0,
+      SVEB: 0,
+      VEB: 0,
+      F: 0,
+      Q: 0,
+    };
+
+    allLabelEntries.forEach((entry) => {
+      const normalized = normalizePredictionLabel(entry?.predictionLabel);
+      classCounts[normalized] += 1;
+    });
+
+    const highRiskCount = classCounts.VEB;
+    const moderateCount = classCounts.SVEB;
+    const normalCount = classCounts.N;
+
+    const recentPredictions = recentEntries.slice(0, 3);
+    const highRiskAlerts = recentEntries
+      .filter((entry) => normalizePredictionLabel(entry?.predictionLabel) === 'VEB')
+      .slice(0, 4);
+
+    const trendEntries = recentEntries.slice(0, 12).reverse();
+    const trendLabels = trendEntries.map((entry) => new Date(entry.createdAt).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    }));
+    const trendScores = trendEntries.map((entry) => Number(computeRiskScore(entry).toFixed(1)));
+
+    dashboardData = {
+      totalScans,
+      highRiskCount,
+      moderateCount,
+      normalCount,
+      classCounts,
+      recentPredictions,
+      highRiskAlerts,
+      trendLabels,
+      trendScores,
+      modelStatus: {
+        isActive: true,
+        accuracy: 97,
+        lastScanAt: recentEntries[0]?.createdAt || null,
+      },
+    };
+  } catch (error) {
+    console.error('Failed to build dashboard data:', error.message);
+  }
+
   res.render('dashboard', {
-    actions: roleActions[req.session.user.role] || [],
+    actions: roleActions[activeRole] || [],
+    canPredict,
+    dashboardData,
   });
 });
 
@@ -317,7 +449,7 @@ app.post('/history/:entryId/delete', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/predict', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
+app.get('/predict', requireAuth, (req, res) => {
   res.render('index', {
     featureNames,
     prediction: null,
@@ -327,14 +459,15 @@ app.get('/predict', requireAuth, requireRole(['admin', 'doctor']), (req, res) =>
     uploadError: null,
     uploadSuccess: null,
     uploadedImageUrl: null,
+    submittedFeatures: null,
   });
 });
 
-app.get('/index', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
+app.get('/index', requireAuth, (req, res) => {
   res.redirect('/predict');
 });
 
-app.post('/upload-image', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
+app.post('/upload-image', requireAuth, (req, res) => {
   upload.single('ecgImage')(req, res, (error) => {
     if (error) {
       const message = error instanceof multer.MulterError
@@ -350,6 +483,7 @@ app.post('/upload-image', requireAuth, requireRole(['admin', 'doctor']), (req, r
         uploadError: message,
         uploadSuccess: null,
         uploadedImageUrl: null,
+        submittedFeatures: null,
       });
     }
 
@@ -363,6 +497,7 @@ app.post('/upload-image', requireAuth, requireRole(['admin', 'doctor']), (req, r
         uploadError: 'Please select an image to upload.',
         uploadSuccess: null,
         uploadedImageUrl: null,
+        submittedFeatures: null,
       });
     }
 
@@ -375,11 +510,12 @@ app.post('/upload-image', requireAuth, requireRole(['admin', 'doctor']), (req, r
       uploadError: null,
       uploadSuccess: `Image uploaded successfully: ${req.file.originalname}`,
       uploadedImageUrl: `/uploads/${req.file.filename}`,
+      submittedFeatures: null,
     });
   });
 });
 
-app.post('/analyze-image', requireAuth, requireRole(['admin', 'doctor']), (req, res) => {
+app.post('/analyze-image', requireAuth, (req, res) => {
   upload.single('ecgImage')(req, res, async (error) => {
     if (error) {
       const message = error instanceof multer.MulterError
@@ -412,7 +548,7 @@ app.post('/analyze-image', requireAuth, requireRole(['admin', 'doctor']), (req, 
   });
 });
 
-app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, res) => {
+app.post('/predict', requireAuth, async (req, res) => {
   const values = { ...req.body };
   const { payload, errors } = buildPayload(req.body);
 
@@ -426,6 +562,7 @@ app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, 
       uploadError: null,
       uploadSuccess: null,
       uploadedImageUrl: null,
+      submittedFeatures: payload.features,
     });
   }
 
@@ -437,9 +574,21 @@ app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, 
     } catch (_descError) {
       predictionDescription = getFallbackClassSummary(prediction.readableLabel || prediction.label);
     }
-      await recordPredictionHistory(req.session.user, payload.features, prediction, predictionDescription);
-    
-      return res.render('index', {
+    req.session.latestPredictionReport = {
+      generatedAt: new Date().toISOString(),
+      modelName: MODEL_DISPLAY_NAME,
+      user: {
+        fullName: req.session.user.fullName,
+        username: req.session.user.username,
+        role: req.session.user.role,
+      },
+      features: payload.features,
+      prediction,
+      predictionDescription,
+    };
+    await recordPredictionHistory(req.session.user, payload.features, prediction, predictionDescription);
+
+    return req.session.save(() => res.render('index', {
       featureNames,
       prediction,
       predictionDescription,
@@ -448,7 +597,8 @@ app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, 
       uploadError: null,
       uploadSuccess: null,
       uploadedImageUrl: null,
-    });
+      submittedFeatures: payload.features,
+    }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     res.render('index', {
@@ -460,15 +610,96 @@ app.post('/predict', requireAuth, requireRole(['admin', 'doctor']), async (req, 
       uploadError: null,
       uploadSuccess: null,
       uploadedImageUrl: null,
+      submittedFeatures: payload.features,
     });
   }
 });
 
+app.get(['/predict/report', '/predict/report/', '/predict-report', '/report'], requireAuth, async (req, res) => {
+  try {
+    return await downloadPredictionReport(req, res);
+  } catch (error) {
+    console.error('Failed to generate prediction report:', error.message);
+    return res.status(500).send('Could not generate prediction report. Please try again.');
+  }
+});
+
 app.get('/forbidden', requireAuth, (req, res) => {
+  const defaultDashboardData = {
+    totalScans: 0,
+    highRiskCount: 0,
+    moderateCount: 0,
+    normalCount: 0,
+    classCounts: {
+      N: 0,
+      SVEB: 0,
+      VEB: 0,
+      F: 0,
+      Q: 0,
+    },
+    recentPredictions: [],
+    highRiskAlerts: [],
+    trendLabels: [],
+    trendScores: [],
+    modelStatus: {
+      isActive: false,
+      accuracy: 0,
+      lastScanAt: null,
+    },
+  };
+
   res.status(403).render('dashboard', {
     actions: [],
+    canPredict: false,
+    dashboardData: defaultDashboardData,
     forbiddenMessage: 'You do not have permission to access that page.',
   });
+});
+
+app.use((error, req, res, next) => {
+  if (error?.code !== 'EBADCSRFTOKEN') {
+    return next(error);
+  }
+
+  const message = 'Invalid or expired security token. Please refresh and try again.';
+  let safeCsrfToken = '';
+  try {
+    safeCsrfToken = req.csrfToken();
+  } catch (_tokenError) {
+    safeCsrfToken = '';
+  }
+
+  if (req.path === '/analyze-image' || req.accepts('json')) {
+    return res.status(403).json({ error: message });
+  }
+
+  if (req.path === '/login') {
+    return res.status(403).render('login', {
+      error: message,
+      username: (req.body.username || '').trim(),
+      csrfToken: safeCsrfToken,
+    });
+  }
+
+  if (req.path === '/register') {
+    const role = (req.body.role || 'patient').trim();
+    return res.status(403).render('register', {
+      error: message,
+      success: null,
+      csrfToken: safeCsrfToken,
+      values: {
+        fullName: (req.body.fullName || '').trim(),
+        username: (req.body.username || '').trim(),
+        role,
+      },
+    });
+  }
+
+  if (req.session.user) {
+    return res.status(403).redirect(req.get('referer') || '/dashboard');
+  }
+
+  return res.status(403).redirect('/login');
 });
 
 startServer();
@@ -1052,6 +1283,113 @@ function buildProbabilitySummary(probabilities) {
   return ranked.length ? `Top probabilities: ${ranked.join(', ')}.` : '';
 }
 
+function buildPredictionReportText(reportContext) {
+  const prediction = reportContext?.prediction || {};
+  const features = reportContext?.features && typeof reportContext.features === 'object'
+    ? reportContext.features
+    : {};
+  const probabilities = prediction.probabilities && typeof prediction.probabilities === 'object'
+    ? prediction.probabilities
+    : null;
+
+  const confidence = probabilities
+    ? Object.values(probabilities)
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+    : [];
+  const topConfidence = confidence.length ? `${(Math.max(...confidence) * 100).toFixed(2)}%` : 'N/A';
+
+  const probabilityLines = probabilities
+    ? Object.entries(probabilities)
+      .map(([label, value]) => {
+        const numeric = Number(value);
+        const asPercent = Number.isFinite(numeric) ? `${(numeric * 100).toFixed(2)}%` : 'N/A';
+        return `- ${label}: ${asPercent}`;
+      })
+      .join('\n')
+    : '- N/A';
+
+  const featureLines = Object.entries(features)
+    .map(([key, value]) => `- ${key}: ${value}`)
+    .join('\n');
+
+  const generatedAt = reportContext?.generatedAt
+    ? new Date(reportContext.generatedAt).toLocaleString()
+    : new Date().toLocaleString();
+
+  const lines = [
+    'AI ARRHYTHMIA PREDICTION REPORT',
+    '===============================',
+    '',
+    `Generated At: ${generatedAt}`,
+    `Patient/User: ${reportContext?.user?.fullName || 'Unknown'} (${reportContext?.user?.username || 'N/A'})`,
+    `Role: ${reportContext?.user?.role || 'N/A'}`,
+    `Model: ${reportContext?.modelName || MODEL_DISPLAY_NAME}`,
+    '',
+    `Predicted Class: ${prediction.readableLabel || prediction.label || 'Unknown'}`,
+    `Label ID: ${prediction.label_id ?? 'N/A'}`,
+    `Top Confidence: ${topConfidence}`,
+    '',
+    'Clinical Insight:',
+    reportContext?.predictionDescription || 'No additional context available.',
+    '',
+    'Probability Breakdown:',
+    probabilityLines,
+    '',
+    'Submitted Features:',
+    featureLines || '- N/A',
+  ];
+
+  return `${lines.join('\n')}\n`;
+}
+
+function buildReportContextFromHistory(sessionUser, historyEntry) {
+  if (!sessionUser || !historyEntry) {
+    return null;
+  }
+
+  return {
+    generatedAt: historyEntry.createdAt ? new Date(historyEntry.createdAt).toISOString() : new Date().toISOString(),
+    modelName: MODEL_DISPLAY_NAME,
+    user: {
+      fullName: sessionUser.fullName,
+      username: sessionUser.username,
+      role: sessionUser.role,
+    },
+    features: historyEntry.features || {},
+    prediction: {
+      label_id: Number.isFinite(Number(historyEntry.labelId)) ? Number(historyEntry.labelId) : -1,
+      label: historyEntry.predictionLabel || 'Unknown',
+      readableLabel: historyEntry.predictionLabel || 'Unknown',
+      probabilities: historyEntry.probabilities || null,
+    },
+    predictionDescription: historyEntry.description || null,
+  };
+}
+
+async function downloadPredictionReport(req, res) {
+  let reportContext = req.session.latestPredictionReport;
+
+  if (!reportContext) {
+    const latestEntry = await PredictionHistory.findOne({ username: req.session.user.username })
+      .sort({ createdAt: -1 })
+      .lean();
+    reportContext = buildReportContextFromHistory(req.session.user, latestEntry);
+  }
+
+  if (!reportContext) {
+    return res.status(400).send('No prediction report available. Run a prediction first.');
+  }
+
+  const reportText = buildPredictionReportText(reportContext);
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="ecg-prediction-report-${stamp}.txt"`);
+  return res.send(reportText);
+}
+
 async function describePredictionWithLLM(prediction) {
   if (!prediction) {
     return 'Prediction details are unavailable.';
@@ -1069,6 +1407,7 @@ async function describePredictionWithLLM(prediction) {
   }
 
   let lastError = null;
+  let hadNotFoundError = false;
   try {
     const probabilitySummary = buildProbabilitySummary(prediction.probabilities);
     const prompt = [
@@ -1109,16 +1448,24 @@ async function describePredictionWithLLM(prediction) {
       } catch (modelError) {
         lastError = modelError;
         if (modelError?.status === 404) {
+          hadNotFoundError = true;
           continue;
         }
       }
+    }
+
+    if (hadNotFoundError && (!lastError || lastError?.status === 404)) {
+      classDescriptionCache.set(cacheKey, fallback);
+      return fallback;
     }
 
     if (lastError) {
       throw lastError;
     }
   } catch (error) {
-    console.error('Prediction description failed:', error.message);
+    if (error?.status !== 404) {
+      console.error('Prediction description failed:', error.message);
+    }
     const fallbackText = fallback;
     classDescriptionCache.set(cacheKey, fallbackText);
     return fallbackText;

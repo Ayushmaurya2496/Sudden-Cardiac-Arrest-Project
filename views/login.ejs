@@ -3,21 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Login | arrhythmia-ai
-</title>
+    <title>Login | Ai-Arrhythmia Prediction</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="https://unpkg.com/lucide@latest" defer></script>
   </head>
   <body>
     <main class="page page-auth">
+      <header class="app-header auth-header">
+        <div class="topbar">
+          <div class="topbar-main">
+            <h1>Login</h1>
+            <p>Sign in to continue as admin, doctor, or patient.</p>
+          </div>
+          <div class="topbar-actions">
+            <a href="/register" class="ghost-link"><i data-lucide="user-plus" class="icon"></i>Register</a>
+          </div>
+        </div>
+      </header>
       <section class="panel auth-panel">
-        <h1>Login</h1>
-        <p>Sign in to continue as admin, doctor, or patient.</p>
-
         <% if (error) { %>
           <div class="alert alert-error"><%= error %></div>
         <% } %>
 
         <form method="POST" action="/login" class="auth-form">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
           <label class="field">
             <span>Username</span>
             <input type="text" name="username" value="<%= username %>" required />
@@ -28,7 +37,7 @@
             <input type="password" name="password" required />
           </label>
 
-          <button type="submit" class="submit">Login</button>
+          <button type="submit" class="submit"><i data-lucide="log-in" class="icon"></i>Login</button>
         </form>
 
         <p class="muted-note">New user? <a href="/register" class="auth-link">Create an account</a></p>
@@ -43,5 +52,12 @@
         </div>
       </section>
     </main>
+    <script>
+      window.addEventListener('DOMContentLoaded', function () {
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+      });
+    </script>
   </body>
 </html>

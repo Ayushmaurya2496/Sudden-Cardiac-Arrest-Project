@@ -5,25 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Prediction History</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="https://unpkg.com/lucide@latest" defer></script>
   </head>
   <body>
     <main class="page">
-      <section class="panel">
+      <header class="app-header">
         <div class="topbar">
-          <div>
+          <div class="topbar-main">
             <h1>Prediction History</h1>
             <p>Signed in as <strong><%= currentUser.fullName %></strong> (<%= currentUser.role %>)</p>
+            <div class="redirect-row header-redirect-row">
+              <a href="/dashboard" class="link-btn"><i data-lucide="layout-dashboard" class="icon"></i>Dashboard</a>
+              <a href="/history" class="ghost-link"><i data-lucide="history" class="icon"></i>History</a>
+              <% if (currentUser.role === 'admin' || currentUser.role === 'doctor') { %>
+                <a href="/predict" class="ghost-link"><i data-lucide="activity" class="icon"></i>Predict</a>
+              <% } %>
+            </div>
           </div>
           <div class="topbar-actions">
-            <a href="/dashboard" class="ghost-link">Dashboard</a>
-            <a href="/predict" class="ghost-link">Predict</a>
             <form method="POST" action="/logout">
-              <button type="submit" class="ghost-btn">Logout</button>
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+              <button type="submit" class="ghost-btn"><i data-lucide="log-out" class="icon"></i>Logout</button>
             </form>
           </div>
         </div>
-
-        <p>All stored predictions for your account, including timestamps, model confidence, and extracted features.</p>
+      </header>
+      <section class="panel">
+        <p>All stored predictions for your account, including model confidence, and extracted features</p>
 
         <% if (typeof error !== 'undefined' && error) { %>
           <div class="alert alert-error"><%= error %></div>
@@ -35,30 +43,113 @@
           </div>
         <% } else { %>
           <div class="history-grid">
-            <% entries.forEach(function(entry) { %>
-              <article class="history-card">
-                <header>
-                  <p class="history-label">Class: <strong><%= entry.predictionLabel %></strong></p>
-                  <p class="history-meta">Recorded <%= new Date(entry.createdAt).toLocaleString() %></p>
+            <% entries.forEach(function(entry, index) { %>
+              <% 
+                const historyLabel = String(entry.predictionLabel || '').toUpperCase();
+                const historyBadgeClass = ({
+                  N: 'status-chip-n',
+                  VEB: 'status-chip-veb',
+                  F: 'status-chip-f',
+                  SVEB: 'status-chip-sveb',
+                  Q: 'status-chip-q',
+                }[historyLabel]) || 'status-chip-default';
+                const historyRiskStripClass = ({
+                  N: 'history-risk-normal',
+                  VEB: 'history-risk-veb',
+                  SVEB: 'history-risk-sveb',
+                  F: 'history-risk-f',
+                  Q: 'history-risk-q',
+                }[historyLabel]) || 'history-risk-default';
+
+                const probabilityEntries = entry.probabilities && typeof entry.probabilities === 'object'
+                  ? Object.entries(entry.probabilities)
+                  : [];
+                const confidenceValues = probabilityEntries
+                  .map(function(prob) { return Number(prob[1]); })
+                  .filter(function(value) { return Number.isFinite(value); });
+                const topConfidence = confidenceValues.length
+                  ? Math.max.apply(null, confidenceValues) * 100
+                  : null;
+                const historyConfidenceClass = ({
+                  N: 'history-confidence-n',
+                  VEB: 'history-confidence-veb',
+                  SVEB: 'history-confidence-sveb',
+                  F: 'history-confidence-f',
+                  Q: 'history-confidence-q',
+                }[historyLabel]) || 'history-confidence-default';
+              %>
+              <article class="history-card <%= historyRiskStripClass %> <%= index === 0 ? 'history-card-recent' : '' %>">
+                <header class="history-priority-row">
+                  <p class="history-label">
+                    <span class="status-chip <%= historyBadgeClass %>"><%= entry.predictionLabel %></span>
+                  </p>
+                  <div class="history-confidence">
+                    <span class="history-confidence-label">Confidence</span>
+                    <strong class="history-confidence-value <%= historyConfidenceClass %>"><%= topConfidence === null ? 'N/A' : `${topConfidence.toFixed(1)}%` %></strong>
+                  </div>
                 </header>
 
-                <% if (entry.description) { %>
-                  <p class="history-description"><%= entry.description %></p>
-                <% } %>
+                <p class="history-meta">Recorded: <%= new Date(entry.createdAt).toLocaleString() %></p>
 
-                <% if (entry.probabilities) { %>
-                  <div class="probabilities">
-                    <% Object.entries(entry.probabilities).forEach(function(prob) { %>
-                      <div class="prob-row">
-                        <span><%= prob[0] %></span>
-                        <span><%= (prob[1] * 100).toFixed(1) %>%</span>
+                <details class="history-note">
+                  <summary>Show clinical note ▼</summary>
+                  <p class="history-description"><%= entry.description || 'No clinical insight available.' %></p>
+                </details>
+
+                <div class="history-divider"></div>
+                <p class="history-section-title">Confidence Breakdown</p>
+
+                <% if (probabilityEntries.length) { %>
+                  <div class="history-probabilities" aria-label="Class confidence bars">
+                    <% probabilityEntries.forEach(function(prob) { 
+                      const classLabel = String(prob[0] || '').toUpperCase();
+                      const raw = Number(prob[1]);
+                      const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw * 100)) : 0;
+                      const normalized = pct / 100;
+                      const glowOpacity = pct <= 0
+                        ? 0
+                        : Math.min(0.75, 0.08 + normalized * 0.52);
+                      const glowSize = pct <= 0
+                        ? 0
+                        : Math.round(4 + normalized * 14);
+                      const glowRgb = ({
+                        N: '34, 197, 94',
+                        VEB: '239, 68, 68',
+                        SVEB: '245, 158, 11',
+                        F: '139, 92, 246',
+                        Q: '100, 116, 139',
+                      }[classLabel]) || '148, 163, 184';
+                      const barClass = ({
+                        N: 'history-prob-fill-n',
+                        VEB: 'history-prob-fill-veb',
+                        SVEB: 'history-prob-fill-sveb',
+                        F: 'history-prob-fill-f',
+                        Q: 'history-prob-fill-q',
+                      }[classLabel]) || 'history-prob-fill-default';
+                    %>
+                      <div class="history-prob-row">
+                        <div class="history-prob-meta">
+                          <span class="history-prob-label"><%= prob[0] %></span>
+                          <span class="history-prob-value"><%= pct.toFixed(1) %>%</span>
+                        </div>
+                        <div class="history-prob-track" aria-hidden="true">
+                          <div
+                            class="history-prob-fill <%= barClass %>"
+                            data-width="<%= pct.toFixed(2) %>"
+                            data-glow-opacity="<%= glowOpacity.toFixed(3) %>"
+                            data-glow-size="<%= glowSize %>"
+                            data-glow-rgb="<%= glowRgb %>"
+                          ></div>
+                        </div>
                       </div>
                     <% }) %>
                   </div>
+                <% } else { %>
+                  <p class="muted-note">No confidence data available.</p>
                 <% } %>
-
+                <div class="history-divider"></div>
                 <details class="history-features">
-                  <summary>Show feature vector</summary>
+                  <summary>Feature Vector ▼</summary>
                   <div class="feature-grid">
                     <% Object.entries(entry.features || {}).forEach(function(feature) { %>
                       <div>
@@ -70,7 +161,8 @@
                 </details>
 
                 <form method="POST" action="/history/<%= entry._id %>/delete" class="history-delete-form">
-                  <button type="submit" class="ghost-btn delete">Delete Entry</button>
+                  <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+                  <button type="submit" class="ghost-btn delete"><i data-lucide="trash-2" class="icon"></i>Delete Entry</button>
                 </form>
               </article>
             <% }) %>
@@ -78,5 +170,47 @@
         <% } %>
       </section>
     </main>
+    <script>
+      function applyHistoryBarStyles() {
+        var bars = document.querySelectorAll('.history-prob-fill[data-width]');
+        bars.forEach(function (bar) {
+          var width = Number(bar.getAttribute('data-width'));
+          var glowOpacity = Number(bar.getAttribute('data-glow-opacity'));
+          var glowSize = Number(bar.getAttribute('data-glow-size'));
+          var glowRgb = String(bar.getAttribute('data-glow-rgb') || '148, 163, 184');
+
+          if (!Number.isFinite(width)) {
+            return;
+          }
+
+          var clampedWidth = Math.max(0, Math.min(100, width));
+          var clampedOpacity = Number.isFinite(glowOpacity)
+            ? Math.max(0, Math.min(0.9, glowOpacity))
+            : 0;
+          var clampedSize = Number.isFinite(glowSize)
+            ? Math.max(0, glowSize)
+            : 0;
+
+          bar.style.width = clampedWidth + '%';
+          bar.style.setProperty('--bar-glow-opacity', String(clampedOpacity));
+          bar.style.setProperty('--bar-glow-size', clampedSize + 'px');
+          bar.style.boxShadow = '0 0 ' + clampedSize + 'px rgba(' + glowRgb + ', ' + clampedOpacity + ')';
+        });
+      }
+
+      function initHistoryPage() {
+        try {
+          if (window.lucide && typeof window.lucide.createIcons === 'function') {
+            window.lucide.createIcons();
+          }
+        } catch (_error) {
+        }
+
+        applyHistoryBarStyles();
+      }
+
+      initHistoryPage();
+      window.addEventListener('DOMContentLoaded', initHistoryPage);
+    </script>
   </body>
 </html>
