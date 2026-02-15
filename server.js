@@ -16,6 +16,8 @@ const { spawn } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const TRUST_PROXY = process.env.TRUST_PROXY !== 'false' && IS_PRODUCTION;
 const MONGO_URI = process.env.MONGO_URI;
 const PYTHON_DIR = path.join(__dirname, 'python');
 const MODEL_PATH = path.join(PYTHON_DIR, 'ecg_xgboost_model.pkl');
@@ -101,15 +103,20 @@ app.use(bodyParser.json());
 app.use(cors());
 app.use(helmet());
 
+if (TRUST_PROXY) {
+  app.set('trust proxy', 1);
+}
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'ecg-final-year-project-secret',
   resave: false,
   saveUninitialized: false,
+  proxy: TRUST_PROXY,
   cookie: {
     maxAge: 1000 * 60 * 60 * 8,
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: IS_PRODUCTION,
   },
 }));
 
@@ -669,10 +676,6 @@ app.use((error, req, res, next) => {
     safeCsrfToken = '';
   }
 
-  if (req.path === '/analyze-image' || req.accepts('json')) {
-    return res.status(403).json({ error: message });
-  }
-
   if (req.path === '/login') {
     return res.status(403).render('login', {
       error: message,
@@ -693,6 +696,13 @@ app.use((error, req, res, next) => {
         role,
       },
     });
+  }
+
+  const acceptsHtml = Boolean(req.accepts('html'));
+  const acceptsJson = Boolean(req.accepts('json'));
+  const prefersJson = acceptsJson && !acceptsHtml;
+  if (req.path === '/analyze-image' || req.xhr || req.is('application/json') || prefersJson) {
+    return res.status(403).json({ error: message });
   }
 
   if (req.session.user) {
