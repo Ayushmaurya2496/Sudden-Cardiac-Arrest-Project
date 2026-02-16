@@ -73,7 +73,102 @@ const CLASS_SUMMARIES = {
 };
 const MODEL_DISPLAY_NAME = 'ECG XGBoost Classifier';
 const classDescriptionCache = new Map();
+const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 5 * 60 * 1000);
+const DASHBOARD_DB_ERROR_LOG_THROTTLE_MS = Number(process.env.DASHBOARD_DB_ERROR_LOG_THROTTLE_MS || 60 * 1000);
+const dashboardDataCache = new Map();
+let lastDashboardDbErrorLogAt = 0;
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+function createEmptyDashboardData(modelStatusOverrides = {}) {
+  return {
+    totalScans: 0,
+    totalUsersRegistered: 0,
+    registeredUsers: [],
+    highRiskCount: 0,
+    moderateCount: 0,
+    normalCount: 0,
+    classCounts: {
+      N: 0,
+      SVEB: 0,
+      VEB: 0,
+      F: 0,
+      Q: 0,
+    },
+    recentPredictions: [],
+    highRiskAlerts: [],
+    trendLabels: [],
+    trendScores: [],
+    trendTopClass: null,
+    trendTopCount: 0,
+    trendSecondClass: null,
+    trendSecondCount: 0,
+    modelStatus: {
+      isActive: true,
+      accuracy: 97,
+      lastScanAt: null,
+      ...modelStatusOverrides,
+    },
+  };
+}
+
+function cloneDashboardData(data) {
+  return JSON.parse(JSON.stringify(data));
+}
+
+function getDashboardCacheKey(user) {
+  const role = String(user?.role || 'unknown').toLowerCase();
+  const username = String(user?.username || 'guest').toLowerCase();
+  return `${role}:${username}`;
+}
+
+function getCachedDashboardData(cacheKey) {
+  const cachedEntry = dashboardDataCache.get(cacheKey);
+  if (!cachedEntry) {
+    return null;
+  }
+
+  const isExpired = Date.now() - cachedEntry.savedAt > DASHBOARD_CACHE_TTL_MS;
+  if (isExpired) {
+    dashboardDataCache.delete(cacheKey);
+    return null;
+  }
+
+  return cloneDashboardData(cachedEntry.data);
+}
+
+function setCachedDashboardData(cacheKey, data) {
+  dashboardDataCache.set(cacheKey, {
+    savedAt: Date.now(),
+    data: cloneDashboardData(data),
+  });
+}
+
+function isTransientDashboardDbError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return [
+    'server monitor timeout',
+    'getaddrinfo enotfound',
+    'econnreset',
+    'etimedout',
+    'mongodbnetworkerror',
+    'mongodbserverselectionerror',
+    'buffering timed out',
+  ].some((token) => message.includes(token));
+}
+
+function logDashboardBuildError(error) {
+  const message = String(error?.message || error || 'Unknown dashboard build error');
+  if (!isTransientDashboardDbError(error)) {
+    console.error('Failed to build dashboard data:', message);
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastDashboardDbErrorLogAt >= DASHBOARD_DB_ERROR_LOG_THROTTLE_MS) {
+    lastDashboardDbErrorLogAt = now;
+    console.warn('Dashboard DB temporarily unavailable. Serving fallback data:', message);
+  }
+}
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -301,35 +396,26 @@ app.get('/dashboard', requireAuth, async (req, res) => {
   const filter = activeRole === 'patient'
     ? { username: req.session.user.username }
     : {};
+  const cacheKey = getDashboardCacheKey(req.session.user);
+  const cachedDashboardData = getCachedDashboardData(cacheKey);
 
-  let dashboardData = {
-    totalScans: 0,
-    totalUsersRegistered: 0,
-    registeredUsers: [],
-    highRiskCount: 0,
-    moderateCount: 0,
-    normalCount: 0,
-    classCounts: {
-      N: 0,
-      SVEB: 0,
-      VEB: 0,
-      F: 0,
-      Q: 0,
-    },
-    recentPredictions: [],
-    highRiskAlerts: [],
-    trendLabels: [],
-    trendScores: [],
-    trendTopClass: null,
-    trendTopCount: 0,
-    trendSecondClass: null,
-    trendSecondCount: 0,
-    modelStatus: {
-      isActive: true,
-      accuracy: 97,
-      lastScanAt: null,
-    },
-  };
+  let dashboardData = cachedDashboardData || createEmptyDashboardData();
+
+  if (mongoose.connection.readyState !== 1 && cachedDashboardData) {
+    dashboardData = {
+      ...cachedDashboardData,
+      modelStatus: {
+        ...cachedDashboardData.modelStatus,
+        isActive: false,
+      },
+    };
+
+    return res.render('dashboard', {
+      actions: roleActions[activeRole] || [],
+      canPredict,
+      dashboardData,
+    });
+  }
 
   function computeRiskScore(entry) {
     const probabilities = entry?.probabilities && typeof entry.probabilities === 'object'
@@ -495,8 +581,23 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         lastScanAt: recentEntries[0]?.createdAt || null,
       },
     };
+    setCachedDashboardData(cacheKey, dashboardData);
   } catch (error) {
-    console.error('Failed to build dashboard data:', error.message);
+    logDashboardBuildError(error);
+    if (cachedDashboardData) {
+      dashboardData = {
+        ...cachedDashboardData,
+        modelStatus: {
+          ...cachedDashboardData.modelStatus,
+          isActive: false,
+        },
+      };
+    } else {
+      dashboardData = createEmptyDashboardData({
+        isActive: false,
+        accuracy: 0,
+      });
+    }
   }
 
   res.render('dashboard', {
@@ -743,34 +844,10 @@ app.get(['/predict/report', '/predict/report/', '/predict-report', '/report'], r
 });
 
 app.get('/forbidden', requireAuth, (req, res) => {
-  const defaultDashboardData = {
-    totalScans: 0,
-    totalUsersRegistered: 0,
-    registeredUsers: [],
-    highRiskCount: 0,
-    moderateCount: 0,
-    normalCount: 0,
-    classCounts: {
-      N: 0,
-      SVEB: 0,
-      VEB: 0,
-      F: 0,
-      Q: 0,
-    },
-    recentPredictions: [],
-    highRiskAlerts: [],
-    trendLabels: [],
-    trendScores: [],
-    trendTopClass: null,
-    trendTopCount: 0,
-    trendSecondClass: null,
-    trendSecondCount: 0,
-    modelStatus: {
-      isActive: false,
-      accuracy: 0,
-      lastScanAt: null,
-    },
-  };
+  const defaultDashboardData = createEmptyDashboardData({
+    isActive: false,
+    accuracy: 0,
+  });
 
   res.status(403).render('dashboard', {
     actions: [],

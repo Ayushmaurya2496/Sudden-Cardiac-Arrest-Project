@@ -164,13 +164,8 @@
               <% if (!registeredUsers.length) { %>
                 <p class="muted-note">No users registered yet.</p>
               <% } else { %>
-                <label class="field">
-                  <span>Search User</span>
-                  <input id="adminUserSearch" type="text" placeholder="Search by name, username, or role" />
-                </label>
                 <ul id="adminUserList" class="dashboard-recent-list">
                   <% registeredUsers.forEach((user) => { %>
-                    <% const searchText = `${user.fullName || ''} ${user.username || ''} ${user.role || ''}`.toLowerCase(); %>
                     <% 
                       const userRole = String(user.role || '').toLowerCase();
                       const roleChipClass = ({
@@ -184,7 +179,7 @@
                         patient: 'admin-user-role-patient',
                       }[userRole]) || 'admin-user-role-default';
                     %>
-                    <li class="dashboard-recent-item admin-user-item <%= roleBoxClass %>" data-search="<%= searchText %>">
+                    <li class="dashboard-recent-item admin-user-item <%= roleBoxClass %>">
                       <div class="dashboard-recent-left">
                         <span class="status-chip <%= roleChipClass %>"><%= (user.role || 'user').toUpperCase() %></span>
                         <div>
@@ -217,7 +212,6 @@
                     </li>
                   <% }) %>
                 </ul>
-                <p id="adminUserNoResults" class="muted-note" style="display: none;">No users found for this search.</p>
               <% } %>
             </section>
           <% } %>
@@ -396,33 +390,6 @@
           });
         }
 
-        const adminUserSearch = document.getElementById('adminUserSearch');
-        const adminUserList = document.getElementById('adminUserList');
-        const noResults = document.getElementById('adminUserNoResults');
-
-        if (adminUserSearch && adminUserList) {
-          const userItems = Array.from(adminUserList.querySelectorAll('.dashboard-recent-item'));
-
-          const applyUserFilter = function () {
-            const query = String(adminUserSearch.value || '').trim().toLowerCase();
-            let visibleCount = 0;
-
-            userItems.forEach(function (item) {
-              const haystack = String(item.getAttribute('data-search') || '');
-              const isVisible = !query || haystack.includes(query);
-              item.style.display = isVisible ? '' : 'none';
-              if (isVisible) {
-                visibleCount += 1;
-              }
-            });
-
-            if (noResults) {
-              noResults.style.display = visibleCount ? 'none' : '';
-            }
-          };
-
-          adminUserSearch.addEventListener('input', applyUserFilter);
-        }
       });
     </script>
   </body>
