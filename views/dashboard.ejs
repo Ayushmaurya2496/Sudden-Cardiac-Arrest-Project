@@ -142,7 +142,7 @@
               </article>
             <% } %>
 
-            <article class="dashboard-stat-card dashboard-class-card">
+            <article class="dashboard-stat-card dashboard-class-card <%= currentUser.role !== 'admin' ? 'dashboard-class-card-wide' : '' %>">
               <div class="dashboard-stat-icon dashboard-stat-number is-warning">CC</div>
               <p class="dashboard-stat-label">Class Cases</p>
               <div class="dashboard-class-counts">
@@ -190,6 +190,16 @@
                         <div>
                           <p class="dashboard-recent-title"><%= user.fullName || user.username %></p>
                           <p class="muted-note">@<%= user.username %></p>
+                          <% const userClassCounts = user.classCounts || { N: 0, SVEB: 0, VEB: 0, F: 0, Q: 0 }; %>
+                          <% const userTotalScans = Number(userClassCounts.N || 0) + Number(userClassCounts.SVEB || 0) + Number(userClassCounts.VEB || 0) + Number(userClassCounts.F || 0) + Number(userClassCounts.Q || 0); %>
+                          <p class="muted-note">Total Scans: <strong><%= userTotalScans %></strong></p>
+                          <div class="admin-user-class-counts" aria-label="Class counts for <%= user.username %>">
+                            <div class="admin-user-class-item"><span class="status-chip status-chip-n">N</span><strong><%= Number(userClassCounts.N || 0) %></strong></div>
+                            <div class="admin-user-class-item"><span class="status-chip status-chip-sveb">SVEB</span><strong><%= Number(userClassCounts.SVEB || 0) %></strong></div>
+                            <div class="admin-user-class-item"><span class="status-chip status-chip-veb">VEB</span><strong><%= Number(userClassCounts.VEB || 0) %></strong></div>
+                            <div class="admin-user-class-item"><span class="status-chip status-chip-f">F</span><strong><%= Number(userClassCounts.F || 0) %></strong></div>
+                            <div class="admin-user-class-item"><span class="status-chip status-chip-q">Q</span><strong><%= Number(userClassCounts.Q || 0) %></strong></div>
+                          </div>
                         </div>
                       </div>
                       <div class="dashboard-recent-actions">

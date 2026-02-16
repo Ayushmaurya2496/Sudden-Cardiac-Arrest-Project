@@ -364,7 +364,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
   }
 
   try {
-    const [totalScans, allLabelEntries, recentEntries, usersForAdmin] = await Promise.all([
+    const [totalScans, allLabelEntries, recentEntries, usersForAdmin, adminClassCountRows] = await Promise.all([
       PredictionHistory.countDocuments(filter),
       PredictionHistory.find(filter)
         .select({ predictionLabel: 1 })
@@ -379,6 +379,19 @@ app.get('/dashboard', requireAuth, async (req, res) => {
           .sort({ createdAt: -1 })
           .lean()
         : Promise.resolve([]),
+      activeRole === 'admin'
+        ? PredictionHistory.aggregate([
+          {
+            $group: {
+              _id: {
+                username: '$username',
+                predictionLabel: '$predictionLabel',
+              },
+              count: { $sum: 1 },
+            },
+          },
+        ])
+        : Promise.resolve([]),
     ]);
 
     const classCounts = {
@@ -392,6 +405,36 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     allLabelEntries.forEach((entry) => {
       const normalized = normalizePredictionLabel(entry?.predictionLabel);
       classCounts[normalized] += 1;
+    });
+
+    const emptyClassCounts = {
+      N: 0,
+      SVEB: 0,
+      VEB: 0,
+      F: 0,
+      Q: 0,
+    };
+
+    const userClassCountMap = {};
+    adminClassCountRows.forEach((row) => {
+      const username = String(row?._id?.username || '').trim();
+      if (!username) {
+        return;
+      }
+
+      const normalized = normalizePredictionLabel(row?._id?.predictionLabel);
+      if (!userClassCountMap[username]) {
+        userClassCountMap[username] = { ...emptyClassCounts };
+      }
+      userClassCountMap[username][normalized] += Number(row?.count || 0);
+    });
+
+    const usersWithClassCounts = usersForAdmin.map((user) => {
+      const userCounts = userClassCountMap[user.username] || { ...emptyClassCounts };
+      return {
+        ...user,
+        classCounts: userCounts,
+      };
     });
 
     const highRiskCount = classCounts.VEB;
@@ -433,7 +476,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     dashboardData = {
       totalScans,
       totalUsersRegistered: usersForAdmin.length,
-      registeredUsers: usersForAdmin,
+      registeredUsers: usersWithClassCounts,
       highRiskCount,
       moderateCount,
       normalCount,
