@@ -226,7 +226,7 @@ app.post('/register', async (req, res) => {
     });
   }
 
-  if (!['doctor', 'patient'].includes(role)) {
+  if (!['admin', 'doctor', 'patient'].includes(role)) {
     return res.status(400).render('register', {
       error: 'Invalid role selected.',
       success: null,
@@ -304,6 +304,8 @@ app.get('/dashboard', requireAuth, async (req, res) => {
 
   let dashboardData = {
     totalScans: 0,
+    totalUsersRegistered: 0,
+    registeredUsers: [],
     highRiskCount: 0,
     moderateCount: 0,
     normalCount: 0,
@@ -318,6 +320,10 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     highRiskAlerts: [],
     trendLabels: [],
     trendScores: [],
+    trendTopClass: null,
+    trendTopCount: 0,
+    trendSecondClass: null,
+    trendSecondCount: 0,
     modelStatus: {
       isActive: true,
       accuracy: 97,
@@ -358,7 +364,7 @@ app.get('/dashboard', requireAuth, async (req, res) => {
   }
 
   try {
-    const [totalScans, allLabelEntries, recentEntries] = await Promise.all([
+    const [totalScans, allLabelEntries, recentEntries, usersForAdmin] = await Promise.all([
       PredictionHistory.countDocuments(filter),
       PredictionHistory.find(filter)
         .select({ predictionLabel: 1 })
@@ -367,6 +373,12 @@ app.get('/dashboard', requireAuth, async (req, res) => {
         .sort({ createdAt: -1 })
         .limit(24)
         .lean(),
+      activeRole === 'admin'
+        ? User.find({})
+          .select({ fullName: 1, username: 1, role: 1 })
+          .sort({ createdAt: -1 })
+          .lean()
+        : Promise.resolve([]),
     ]);
 
     const classCounts = {
@@ -398,8 +410,30 @@ app.get('/dashboard', requireAuth, async (req, res) => {
     }));
     const trendScores = trendEntries.map((entry) => Number(computeRiskScore(entry).toFixed(1)));
 
+    const trendClassCounts = {
+      N: 0,
+      SVEB: 0,
+      VEB: 0,
+      F: 0,
+      Q: 0,
+    };
+
+    trendEntries.forEach((entry) => {
+      const normalized = normalizePredictionLabel(entry?.predictionLabel);
+      trendClassCounts[normalized] += 1;
+    });
+
+    const sortedTrendClasses = Object.entries(trendClassCounts)
+      .filter((entry) => entry[1] > 0)
+      .sort((first, second) => second[1] - first[1]);
+
+    const [trendTopClass = null, trendTopCount = 0] = sortedTrendClasses[0] || [];
+    const [trendSecondClass = null, trendSecondCount = 0] = sortedTrendClasses[1] || [];
+
     dashboardData = {
       totalScans,
+      totalUsersRegistered: usersForAdmin.length,
+      registeredUsers: usersForAdmin,
       highRiskCount,
       moderateCount,
       normalCount,
@@ -408,6 +442,10 @@ app.get('/dashboard', requireAuth, async (req, res) => {
       highRiskAlerts,
       trendLabels,
       trendScores,
+      trendTopClass,
+      trendTopCount,
+      trendSecondClass,
+      trendSecondCount,
       modelStatus: {
         isActive: true,
         accuracy: 97,
@@ -427,17 +465,22 @@ app.get('/dashboard', requireAuth, async (req, res) => {
 
 app.get('/history', requireAuth, async (req, res) => {
   try {
-    const entries = await PredictionHistory.find({ username: req.session.user.username })
+    const isAdmin = req.session.user.role === 'admin';
+    const historyFilter = isAdmin ? {} : { username: req.session.user.username };
+
+    const entries = await PredictionHistory.find(historyFilter)
       .sort({ createdAt: -1 })
       .lean();
 
     res.render('history', {
       entries,
+      isAdmin,
     });
   } catch (error) {
     console.error('Failed to load history:', error.message);
     res.status(500).render('history', {
       entries: [],
+      isAdmin: req.session.user.role === 'admin',
       error: 'Could not load prediction history. Please try again later.',
     });
   }
@@ -445,14 +488,39 @@ app.get('/history', requireAuth, async (req, res) => {
 
 app.post('/history/:entryId/delete', requireAuth, async (req, res) => {
   try {
-    await PredictionHistory.deleteOne({
-      _id: req.params.entryId,
-      username: req.session.user.username,
-    });
+    const isAdmin = req.session.user.role === 'admin';
+    const deleteFilter = isAdmin
+      ? { _id: req.params.entryId }
+      : { _id: req.params.entryId, username: req.session.user.username };
+
+    await PredictionHistory.deleteOne(deleteFilter);
     res.redirect('/history');
   } catch (error) {
     console.error('Failed to delete history entry:', error.message);
     res.status(500).redirect('/history');
+  }
+});
+
+app.post('/admin/users/:userId/delete', requireAuth, requireRole(['admin']), async (req, res) => {
+  try {
+    const targetUser = await User.findById(req.params.userId).lean();
+    if (!targetUser) {
+      return res.redirect('/dashboard');
+    }
+
+    if (targetUser.username === req.session.user.username) {
+      return res.redirect('/dashboard');
+    }
+
+    await Promise.all([
+      User.deleteOne({ _id: req.params.userId }),
+      PredictionHistory.deleteMany({ username: targetUser.username }),
+    ]);
+
+    return res.redirect('/dashboard');
+  } catch (error) {
+    console.error('Failed to delete user:', error.message);
+    return res.status(500).redirect('/dashboard');
   }
 });
 
@@ -634,6 +702,8 @@ app.get(['/predict/report', '/predict/report/', '/predict-report', '/report'], r
 app.get('/forbidden', requireAuth, (req, res) => {
   const defaultDashboardData = {
     totalScans: 0,
+    totalUsersRegistered: 0,
+    registeredUsers: [],
     highRiskCount: 0,
     moderateCount: 0,
     normalCount: 0,
@@ -648,6 +718,10 @@ app.get('/forbidden', requireAuth, (req, res) => {
     highRiskAlerts: [],
     trendLabels: [],
     trendScores: [],
+    trendTopClass: null,
+    trendTopCount: 0,
+    trendSecondClass: null,
+    trendSecondCount: 0,
     modelStatus: {
       isActive: false,
       accuracy: 0,

@@ -89,6 +89,75 @@
                 <% } %>
               </section>
 
+              <section class="class-meaning-guide" aria-label="ECG class meanings">
+                <h3>ECG Class Meaning Guide</h3>
+
+                <article class="class-meaning-row">
+                  <p class="class-meaning-title">
+                    <span class="status-chip status-chip-n">N</span>
+                    <strong>Normal Beat (Healthy Rhythm)</strong>
+                  </p>
+                  <ul>
+                    <li><strong>Electrical Origin:</strong> SA node (the heart's natural pacemaker)</li>
+                    <li><strong>ECG Shape:</strong> Regular P → QRS → T sequence with consistent timing</li>
+                    <li><strong>Meaning:</strong> Electrical conduction is normal and pumping remains efficient</li>
+                    <li><strong>Doctor POV:</strong> Baseline rhythm with no arrhythmia; usually the majority class in ML datasets</li>
+                  </ul>
+                </article>
+
+                <article class="class-meaning-row">
+                  <p class="class-meaning-title">
+                    <span class="status-chip status-chip-sveb">SVEB</span>
+                    <strong>Supraventricular Ectopic Beat</strong>
+                  </p>
+                  <ul>
+                    <li><strong>Electrical Origin:</strong> Atria or AV node</li>
+                    <li><strong>ECG Shape:</strong> Abnormal P wave, narrow QRS</li>
+                    <li><strong>Meaning:</strong> An extra beat originates from the upper chambers; can also appear with stress, caffeine, or anxiety</li>
+                    <li><strong>Clinical Risk:</strong> Usually moderate; frequent episodes can indicate atrial arrhythmia risk</li>
+                  </ul>
+                </article>
+
+                <article class="class-meaning-row">
+                  <p class="class-meaning-title">
+                    <span class="status-chip status-chip-veb">VEB</span>
+                    <strong>Ventricular Ectopic Beat</strong>
+                  </p>
+                  <ul>
+                    <li><strong>Electrical Origin:</strong> Ventricles</li>
+                    <li><strong>ECG Shape:</strong> Wide QRS; P wave may be absent</li>
+                    <li><strong>Meaning:</strong> Abnormal firing starts in the ventricles and may reduce pumping efficiency</li>
+                    <li><strong>Doctor POV:</strong> High-risk category; frequent VEB can raise concern for ventricular tachycardia</li>
+                  </ul>
+                </article>
+
+                <article class="class-meaning-row">
+                  <p class="class-meaning-title">
+                    <span class="status-chip status-chip-f">F</span>
+                    <strong>Fusion Beat</strong>
+                  </p>
+                  <ul>
+                    <li><strong>Electrical Origin:</strong> Normal + Ventricular signal mix</li>
+                    <li><strong>ECG Shape:</strong> Hybrid QRS (neither purely normal nor purely ventricular)</li>
+                    <li><strong>Meaning:</strong> Two electrical signals overlap at the same time; rare and complex pattern</li>
+                    <li><strong>Clinical Insight:</strong> Often needs advanced interpretation and can confuse ML classification</li>
+                  </ul>
+                </article>
+
+                <article class="class-meaning-row">
+                  <p class="class-meaning-title">
+                    <span class="status-chip status-chip-q">Q</span>
+                    <strong>Unknown / Unclassifiable</strong>
+                  </p>
+                  <ul>
+                    <li><strong>Electrical Origin:</strong> Not clearly identifiable</li>
+                    <li><strong>ECG Shape:</strong> Undefined / noisy</li>
+                    <li><strong>Meaning:</strong> Signal is unclear or label confidence is insufficient; manual clinical review is recommended</li>
+                    <li><strong>Real Reason:</strong> Noise, artifacts, or rare arrhythmia patterns</li>
+                  </ul>
+                </article>
+              </section>
+
               <div class="ai-skeleton" id="ai-skeleton" hidden aria-live="polite">
                 <div class="ai-skeleton-bar"></div>
                 <div class="ai-skeleton-bar short"></div>

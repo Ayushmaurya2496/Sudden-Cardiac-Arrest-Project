@@ -31,7 +31,11 @@
         </div>
       </header>
       <section class="panel">
-        <p>All stored predictions for your account, including model confidence, and extracted features</p>
+        <p>
+          <%= isAdmin
+            ? 'All stored predictions across all users, including model confidence and extracted features.'
+            : 'All stored predictions for your account, including model confidence and extracted features.' %>
+        </p>
 
         <% if (typeof error !== 'undefined' && error) { %>
           <div class="alert alert-error"><%= error %></div>
@@ -90,6 +94,9 @@
                 </header>
 
                 <p class="history-meta">Recorded: <%= new Date(entry.createdAt).toLocaleString() %></p>
+                <% if (isAdmin) { %>
+                  <p class="history-meta">User: <strong><%= entry.userDisplayName || entry.username %></strong> (@<%= entry.username %>)</p>
+                <% } %>
 
                 <details class="history-note">
                   <summary>Show clinical note ▼</summary>
@@ -126,11 +133,18 @@
                         F: 'history-prob-fill-f',
                         Q: 'history-prob-fill-q',
                       }[classLabel]) || 'history-prob-fill-default';
+                      const valueGlowClass = ({
+                        N: 'history-prob-value-n',
+                        VEB: 'history-prob-value-veb',
+                        SVEB: 'history-prob-value-sveb',
+                        F: 'history-prob-value-f',
+                        Q: 'history-prob-value-q',
+                      }[classLabel]) || 'history-prob-value-default';
                     %>
                       <div class="history-prob-row">
                         <div class="history-prob-meta">
                           <span class="history-prob-label"><%= prob[0] %></span>
-                          <span class="history-prob-value"><%= pct.toFixed(1) %>%</span>
+                          <span class="history-prob-value <%= valueGlowClass %>"><%= pct.toFixed(1) %>%</span>
                         </div>
                         <div class="history-prob-track" aria-hidden="true">
                           <div

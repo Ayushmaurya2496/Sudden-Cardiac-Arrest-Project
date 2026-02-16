@@ -13,7 +13,7 @@
         <div class="topbar">
           <div class="topbar-main">
             <h1>Create Account</h1>
-            <p>Register as doctor or patient to access the system.</p>
+            <p>Register as admin, doctor, or patient to access the system.</p>
           </div>
           <div class="topbar-actions">
             <a href="/login" class="ghost-link"><i data-lucide="log-in" class="icon"></i>Login</a>
@@ -24,26 +24,23 @@
         <% if (error) { %>
           <div class="alert alert-error"><%= error %></div>
         <% } %>
-
         <% if (success) { %>
           <div class="alert alert-success"><%= success %></div>
         <% } %>
-
         <form method="POST" action="/register" class="auth-form">
           <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
           <label class="field">
             <span>Full Name</span>
             <input type="text" name="fullName" value="<%= values.fullName || '' %>" required />
           </label>
-
           <label class="field">
             <span>Username</span>
             <input type="text" name="username" value="<%= values.username || '' %>" required />
           </label>
-
           <label class="field">
             <span>Role</span>
             <select name="role" required>
+              <option value="admin" <%= values.role === 'admin' ? 'selected' : '' %>>Admin</option>
               <option value="patient" <%= values.role === 'patient' ? 'selected' : '' %>>Patient</option>
               <option value="doctor" <%= values.role === 'doctor' ? 'selected' : '' %>>Doctor</option>
             </select>

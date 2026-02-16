@@ -24,14 +24,12 @@
         <% if (error) { %>
           <div class="alert alert-error"><%= error %></div>
         <% } %>
-
         <form method="POST" action="/login" class="auth-form">
           <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
           <label class="field">
             <span>Username</span>
             <input type="text" name="username" value="<%= username %>" required />
           </label>
-
           <label class="field">
             <span>Password</span>
             <input type="password" name="password" required />
